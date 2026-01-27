@@ -205,8 +205,9 @@ class RealFederatedTrainer:
         
         avg_loss = total_loss / max(num_batches, 1)
         
-        # Return updated weights
-        return {name: param.data.clone() for name, param in model.named_parameters()}, avg_loss
+        # Return updated weights (only return parameters that require gradients for LoRA)
+        weights = {name: param.data.clone() for name, param in model.named_parameters() if param.requires_grad or 'classifier' in name or 'score' in name}
+        return weights, avg_loss
     
     def aggregate_weights(
         self,
@@ -405,13 +406,24 @@ class LoRAFederatedTrainer(RealFederatedTrainer):
         print(f"[LoRA] raw target_modules: {target_modules[:10]} (up to 10)")
         print(f"[LoRA] filtered target_modules: {final_targets[:10]} (up to 10)")
 
-        # Configure LoRA
+        # Identify classifier module names to keep trainable
+        classifier_names = []
+        for name, _ in model.named_modules():
+            if any(cls_token in name for cls_token in ['classifier', 'score', 'pre_classifier']):
+                classifier_names.append(name.split('.')[-1])
+        
+        # Unique classifier names
+        modules_to_save = sorted(set(classifier_names)) if classifier_names else ['classifier']
+        print(f"[LoRA] modules_to_save (trainable heads): {modules_to_save}")
+
+        # Configure LoRA with trainable classifier
         lora_config = LoraConfig(
             task_type=TaskType.SEQ_CLS,
             r=self.rank,
             lora_alpha=16,
             lora_dropout=0.1,
-            target_modules=final_targets
+            target_modules=final_targets,
+            modules_to_save=modules_to_save  # Keep classifier trainable!
         )
         
         # Apply LoRA
