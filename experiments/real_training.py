@@ -358,14 +358,38 @@ class LoRAFederatedTrainer(RealFederatedTrainer):
         """Apply LoRA to model"""
         from peft import get_peft_model, LoraConfig, TaskType
         
+        # Dynamically determine suitable target modules for LoRA by
+        # scanning the model for linear submodules. This avoids mismatches
+        # between model types (DistilBERT, BERT, GPT-2, etc.) and the
+        # hard-coded target module names.
+        linear_module_names = []
+        for name, module in model.named_modules():
+            if isinstance(module, nn.Linear):
+                # take the last token of the module path (e.g. 'q_proj', 'dense')
+                token = name.split('.')[-1]
+                if token:
+                    linear_module_names.append(token)
+
+        # Unique and stable ordering
+        target_modules = sorted(set(linear_module_names))
+
+        # Fallback heuristic for common architectures
+        if not target_modules:
+            if "bert" in self.model_name.lower() or "distil" in self.model_name.lower():
+                target_modules = ["q_proj", "v_proj"]
+            else:
+                target_modules = ["c_attn", "c_proj"]
+
+        # Log what we'll target
+        print(f"[LoRA] target_modules: {target_modules[:10]} (showing up to 10)")
+
         # Configure LoRA
         lora_config = LoraConfig(
             task_type=TaskType.SEQ_CLS,
             r=self.rank,
             lora_alpha=16,
             lora_dropout=0.1,
-            target_modules=["q_proj", "v_proj"] if "bert" in self.model_name.lower() 
-                          else ["c_attn", "c_proj"]
+            target_modules=target_modules
         )
         
         # Apply LoRA
