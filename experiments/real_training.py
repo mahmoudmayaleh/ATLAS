@@ -15,6 +15,7 @@ import numpy as np
 from typing import Dict, List, Tuple, Optional
 import time
 from dataclasses import dataclass
+import logging
 
 
 @dataclass
@@ -52,6 +53,14 @@ class RealFederatedTrainer:
         self.device = device
         
         print(f"[INIT] Using device: {self.device}")
+        # Silence verbose transformers warnings about newly initialized heads
+        # (e.g. "Some weights ... were not initialized ... You should probably TRAIN...")
+        # We set transformers logging to ERROR so these INFO/WARNING messages are suppressed.
+        try:
+            logging.getLogger("transformers").setLevel(logging.ERROR)
+            logging.getLogger("transformers.modeling_utils").setLevel(logging.ERROR)
+        except Exception:
+            pass
         
         # Load tokenizer
         self.tokenizer = AutoTokenizer.from_pretrained(model_name)
@@ -421,21 +430,29 @@ class LoRAFederatedTrainer(RealFederatedTrainer):
         self,
         client_weights_list: List[Dict[str, torch.Tensor]]
     ) -> Dict[str, torch.Tensor]:
-        """Aggregate only LoRA parameters"""
+        """Aggregate only LoRA parameters (trainable adapters)"""
         
         if not client_weights_list:
             return {}
         
-        # Only aggregate trainable parameters (LoRA adapters)
-        lora_keys = [k for k in client_weights_list[0].keys() if 'lora' in k.lower()]
+        # Identify trainable parameters (LoRA adapters and classifier head)
+        # PEFT LoRA uses various naming: 'lora_A', 'lora_B', 'modules_to_save', etc.
+        # We aggregate anything that contains 'lora' or 'classifier' or 'score'
+        trainable_keywords = ['lora', 'classifier', 'score', 'modules_to_save']
+        trainable_keys = [
+            k for k in client_weights_list[0].keys() 
+            if any(keyword in k.lower() for keyword in trainable_keywords)
+        ]
+        
+        print(f"[AGGREGATE] Aggregating {len(trainable_keys)} trainable keys, keeping {len(client_weights_list[0]) - len(trainable_keys)} frozen")
         
         aggregated = {}
         for key in client_weights_list[0].keys():
-            if key in lora_keys:
-                # Average LoRA parameters
+            if key in trainable_keys:
+                # Average trainable parameters across clients
                 aggregated[key] = torch.stack([w[key] for w in client_weights_list]).mean(dim=0)
             else:
-                # Keep base model parameters from first client (they should be identical)
+                # Keep frozen base model parameters (should be identical across clients)
                 aggregated[key] = client_weights_list[0][key]
         
         return aggregated
