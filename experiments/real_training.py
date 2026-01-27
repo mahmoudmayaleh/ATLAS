@@ -380,8 +380,21 @@ class LoRAFederatedTrainer(RealFederatedTrainer):
             else:
                 target_modules = ["c_attn", "c_proj"]
 
+        # Filter target modules to a safe subset (avoid classifier/head layers)
+        include_keywords = [
+            'q', 'k', 'v', 'proj', 'attn', 'query', 'key', 'value', 'out', 'in_proj'
+        ]
+        filtered = [t for t in target_modules if any(k in t for k in include_keywords)]
+        # If filtering removed everything, keep a conservative set (q,k,v,out)
+        if not filtered:
+            filtered = [t for t in target_modules if any(k in t for k in ['q', 'k', 'v', 'out'])]
+
+        # Final selection
+        final_targets = sorted(set(filtered))
+
         # Log what we'll target
-        print(f"[LoRA] target_modules: {target_modules[:10]} (showing up to 10)")
+        print(f"[LoRA] raw target_modules: {target_modules[:10]} (up to 10)")
+        print(f"[LoRA] filtered target_modules: {final_targets[:10]} (up to 10)")
 
         # Configure LoRA
         lora_config = LoraConfig(
@@ -389,7 +402,7 @@ class LoRAFederatedTrainer(RealFederatedTrainer):
             r=self.rank,
             lora_alpha=16,
             lora_dropout=0.1,
-            target_modules=target_modules
+            target_modules=final_targets
         )
         
         # Apply LoRA
