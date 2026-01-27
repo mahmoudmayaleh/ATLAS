@@ -34,6 +34,31 @@ class DeviceProfiler:
             'memory_mb': 8192,
             'compute_ratio': 10.0,
             'suggested_ranks': [16, 32, 64]
+        },
+        'smartphone': {
+            'memory_mb': 2048,
+            'compute_ratio': 0.5,
+            'suggested_ranks': [2, 4]
+        },
+        'tablet': {
+            'memory_mb': 3072,
+            'compute_ratio': 1.5,
+            'suggested_ranks': [4, 8]
+        },
+        'laptop_cpu': {
+            'memory_mb': 4096,
+            'compute_ratio': 2.0,
+            'suggested_ranks': [8, 16]
+        },
+        'laptop_gpu': {
+            'memory_mb': 8192,
+            'compute_ratio': 8.0,
+            'suggested_ranks': [16, 32]
+        },
+        'workstation': {
+            'memory_mb': 32768,
+            'compute_ratio': 15.0,
+            'suggested_ranks': [32, 64, 128]
         }
     }
     
@@ -267,68 +292,130 @@ class WeightImportanceScorer:
 
 class RankAllocator:
     """
-    Allocate heterogeneous LoRA ranks based on device capabilities and importance.
+    Allocate heterogeneous LoRA ranks based on HSplitLoRA formulation.
+    
+    Follows the constraint: Σ(2·d·r_ℓ·b) ≤ C_mem
+    where C_mem = M_device · (1 - α_base - α_act - α_opt)
     """
     
-    def __init__(self, model_dim: int = 768):
+    def __init__(self, model_dim: int = 768, bytes_per_param: int = 4):
         """
         Initialize RankAllocator.
         
         Args:
             model_dim: Model hidden dimension (e.g., 768 for GPT-2)
+            bytes_per_param: Bytes per parameter (4 for fp32, 2 for fp16)
         """
         self.model_dim = model_dim
+        self.bytes_per_param = bytes_per_param
         self.rank_candidates = [4, 8, 16, 32, 64]
         self.profiler = DeviceProfiler()
+        
+        # Memory fraction reservations (HSplitLoRA style)
+        self.alpha_base = 0.35      # Base model (frozen)
+        self.alpha_act = 0.25       # Activations + gradients
+        self.alpha_opt = 0.15       # Optimizer states (Adam: 2x params)
+        # Remaining: 1 - 0.35 - 0.25 - 0.15 = 0.25 (25% for LoRA adapters)
+    
+    def compute_adapter_memory_budget(self, device_memory_mb: float) -> float:
+        """
+        Compute available memory for LoRA adapters following HSplitLoRA.
+        
+        C_mem = M_device · (1 - α_base - α_act - α_opt)
+        
+        Args:
+            device_memory_mb: Total device memory in MB
+            
+        Returns:
+            Available adapter memory in bytes
+        """
+        M_device = device_memory_mb * 1024 * 1024  # Convert to bytes
+        C_mem = M_device * (1.0 - self.alpha_base - self.alpha_act - self.alpha_opt)
+        return C_mem
+    
+    def compute_rank_memory(self, rank: int, model_dim: Optional[int] = None) -> float:
+        """
+        Compute memory for single LoRA adapter per layer.
+        
+        M_param(W, r) = 2·d·r·b
+        
+        Args:
+            rank: LoRA rank
+            model_dim: Model dimension (uses self.model_dim if None)
+            
+        Returns:
+            Memory in bytes
+        """
+        d = model_dim if model_dim is not None else self.model_dim
+        # A: (d, r), B: (r, d) → total params = d·r + r·d = 2·d·r
+        return 2 * d * rank * self.bytes_per_param
     
     def allocate_ranks(self, device_profile: Dict, 
                       importance_scores: Dict[str, float],
-                      n_layers: int) -> List[int]:
+                      n_layers: int,
+                      split_point: Optional[int] = None) -> List[int]:
         """
-        Allocate heterogeneous ranks per layer.
+        Allocate heterogeneous ranks per layer using HSplitLoRA formulation.
+        
+        Constraint: Σ(2·d·r_ℓ·b) ≤ C_mem
+        
+        Uses greedy importance-based allocation:
+        1. Sort layers by importance (descending)
+        2. For each layer, assign highest rank that keeps sum ≤ C_mem
         
         Args:
             device_profile: Device profile from DeviceProfiler
-            importance_scores: Importance score per layer
-            n_layers: Number of layers
+            importance_scores: Importance score per layer (normalized to sum to 1)
+            n_layers: Total number of layers in model
+            split_point: If specified, only allocate for client-side layers (0 to split_point-1)
             
         Returns:
             List of ranks per layer
         """
-        memory_budget = device_profile['memory_mb'] * 1024 * 1024  # Convert to bytes
+        # Compute adapter memory budget
+        C_mem = self.compute_adapter_memory_budget(device_profile['memory_mb'])
         
-        # Reserve 50% for base model
-        available_memory = memory_budget * 0.5
-        
-        # Compute total importance if scores provided per layer
-        if any(k.startswith('layer_') for k in importance_scores.keys()):
-            # Aggregate importance per layer
-            layer_importance = []
-            for layer_idx in range(n_layers):
-                importance = importance_scores.get(f'layer_{layer_idx}', 1.0 / n_layers)
-                layer_importance.append(importance)
+        # Determine which layers to allocate (client-side only if split_point given)
+        if split_point is not None:
+            layers_to_allocate = list(range(split_point))
         else:
-            # Use uniform importance
-            layer_importance = [1.0 / n_layers] * n_layers
+            layers_to_allocate = list(range(n_layers))
         
-        # Allocate ranks proportional to importance
-        ranks_per_layer = []
+        # Extract importance per layer
+        layer_importance = []
+        for layer_idx in layers_to_allocate:
+            importance = importance_scores.get(f'layer_{layer_idx}', 1.0 / len(layers_to_allocate))
+            layer_importance.append((layer_idx, importance))
         
-        for layer_idx in range(n_layers):
-            importance = layer_importance[layer_idx]
-            
-            # Compute max rank based on memory
-            memory_per_rank = 2 * self.model_dim * 4  # bytes per rank (A and B matrices)
-            max_rank_memory = available_memory / (n_layers * memory_per_rank)
-            
-            # Scale by importance (more important layers get higher ranks)
-            scaled_rank = max_rank_memory * (1 + importance)
-            
-            # Select from candidates
-            rank = self._select_rank(scaled_rank)
-            ranks_per_layer.append(rank)
+        # Normalize importance to sum to 1
+        total_importance = sum(imp for _, imp in layer_importance)
+        if total_importance > 1e-8:
+            layer_importance = [(idx, imp / total_importance) for idx, imp in layer_importance]
         
-        return ranks_per_layer
+        # Sort layers by importance (descending) - HSplitLoRA greedy allocation
+        layer_importance.sort(key=lambda x: x[1], reverse=True)
+        
+        # Initialize ranks to minimum
+        ranks = [self.rank_candidates[0]] * n_layers
+        
+        # Greedy allocation: iterate by importance, assign highest feasible rank
+        current_memory = 0.0
+        
+        for layer_idx, importance in layer_importance:
+            # Try ranks in descending order
+            for rank in reversed(self.rank_candidates):
+                # Compute marginal memory cost
+                old_rank_memory = self.compute_rank_memory(ranks[layer_idx])
+                new_rank_memory = self.compute_rank_memory(rank)
+                marginal_memory = new_rank_memory - old_rank_memory
+                
+                # Check if it fits in budget
+                if current_memory + marginal_memory <= C_mem:
+                    ranks[layer_idx] = rank
+                    current_memory += marginal_memory
+                    break  # Assigned highest feasible rank
+        
+        return ranks
     
     def _select_rank(self, target_rank: float) -> int:
         """
@@ -347,36 +434,62 @@ class RankAllocator:
         else:
             return self.rank_candidates[0]  # Return minimum rank
     
-    def allocate_uniform_ranks(self, device_type: str, n_layers: int) -> List[int]:
+    def allocate_uniform_ranks(self, device_type: str, n_layers: int,
+                              split_point: Optional[int] = None) -> List[int]:
         """
         Allocate uniform ranks for all layers (simpler baseline).
         
+        Uses HSplitLoRA constraint to find maximum uniform rank:
+        L_client · 2·d·r·b ≤ C_mem
+        → r ≤ C_mem / (L_client · 2·d·b)
+        
         Args:
             device_type: Type of device
-            n_layers: Number of layers
+            n_layers: Total number of layers
+            split_point: If specified, only allocate for client-side layers
             
         Returns:
             List of uniform ranks
         """
         profile = self.profiler.profile_device(device_type)
-        suggested_ranks = profile['suggested_ranks']
+        C_mem = self.compute_adapter_memory_budget(profile['memory_mb'])
         
-        # Use the median suggested rank
-        uniform_rank = suggested_ranks[len(suggested_ranks) // 2]
+        # Determine number of client-side layers
+        if split_point is not None:
+            L_client = split_point
+        else:
+            L_client = n_layers
+        
+        # Compute maximum uniform rank under constraint
+        # L_client · 2·d·r·b ≤ C_mem
+        # r ≤ C_mem / (L_client · 2·d·b)
+        max_uniform_rank = C_mem / (L_client * 2 * self.model_dim * self.bytes_per_param)
+        
+        # Select largest candidate rank that fits
+        uniform_rank = self._select_rank(max_uniform_rank)
+        
+        # Fall back to suggested ranks if computed rank seems unreasonable
+        suggested_ranks = profile['suggested_ranks']
+        if uniform_rank > suggested_ranks[-1]:
+            uniform_rank = suggested_ranks[-1]  # Cap at max suggested
+        elif uniform_rank < suggested_ranks[0]:
+            uniform_rank = suggested_ranks[0]  # Floor at min suggested
         
         return [uniform_rank] * n_layers
     
     def get_rank_for_device(self, device_id: int, device_type: str,
                            task_group_importance: Dict,
-                           n_layers: int = 12) -> List[int]:
+                           n_layers: int = 12,
+                           split_point: Optional[int] = None) -> List[int]:
         """
-        Get ranks for specific device.
+        Get ranks for specific device following HSplitLoRA formulation.
         
         Args:
             device_id: Device identifier
             device_type: Type of device
             task_group_importance: Importance scores for device's task group
-            n_layers: Number of model layers
+            n_layers: Total number of model layers
+            split_point: Split point (allocates for client-side layers only)
             
         Returns:
             List of ranks per layer
@@ -384,33 +497,144 @@ class RankAllocator:
         profile = self.profiler.profile_device(device_type)
         importance = task_group_importance.get(device_id, {})
         
-        return self.allocate_ranks(profile, importance, n_layers)
+        return self.allocate_ranks(profile, importance, n_layers, split_point)
+    
+    def compute_optimal_split_point(self, device_profile: Dict,
+                                   importance_scores: Dict[str, float],
+                                   n_layers: int,
+                                   candidate_splits: Optional[List[int]] = None) -> Tuple[int, List[int], float]:
+        """
+        Find optimal split point following HSplitLoRA.
+        
+        For each candidate split S, computes client-side LoRA allocation
+        and selects split that maximizes importance-weighted ranks under budget.
+        
+        Objective: max_S Σ(I_ℓ · r_ℓ) for ℓ in client-side layers
+        Subject to: Σ(2·d·r_ℓ·b) ≤ C_mem
+        
+        Args:
+            device_profile: Device profile
+            importance_scores: Importance scores per layer
+            n_layers: Total layers
+            candidate_splits: List of candidate split points (default: [4, 6, 8])
+            
+        Returns:
+            Tuple of (best_split, best_ranks, best_utility)
+        """
+        if candidate_splits is None:
+            # Default: try splitting at 1/3, 1/2, 2/3 of model
+            candidate_splits = [n_layers // 3, n_layers // 2, 2 * n_layers // 3]
+        
+        best_split = candidate_splits[0]
+        best_ranks = None
+        best_utility = -float('inf')
+        
+        for split_point in candidate_splits:
+            # Allocate ranks for this split
+            ranks = self.allocate_ranks(device_profile, importance_scores, 
+                                       n_layers, split_point)
+            
+            # Compute utility: Σ(I_ℓ · r_ℓ) for client-side layers
+            utility = 0.0
+            for layer_idx in range(split_point):
+                importance = importance_scores.get(f'layer_{layer_idx}', 0.0)
+                utility += importance * ranks[layer_idx]
+            
+            # Check if valid
+            is_valid, _, _ = self.validate_memory_constraint(ranks, device_profile, split_point)
+            
+            if is_valid and utility > best_utility:
+                best_split = split_point
+                best_ranks = ranks
+                best_utility = utility
+        
+        return best_split, best_ranks, best_utility
     
     def validate_memory_constraint(self, ranks: List[int], 
-                                   device_profile: Dict) -> Tuple[bool, float]:
+                                   device_profile: Dict,
+                                   split_point: Optional[int] = None) -> Tuple[bool, float]:
         """
-        Validate that rank allocation fits in memory.
+        Validate that rank allocation satisfies HSplitLoRA constraint.
+        
+        Constraint: Σ(2·d·r_ℓ·b) ≤ C_mem
         
         Args:
             ranks: List of ranks per layer
             device_profile: Device profile
+            split_point: If specified, only validate client-side layers
             
         Returns:
-            (is_valid, memory_usage_mb)
+            Tuple of (is_valid, memory_usage_mb)
         """
-        # Calculate memory usage
-        total_memory = 0
-        for rank in ranks:
-            # A: (model_dim, rank), B: (rank, model_dim)
-            memory_per_layer = 2 * self.model_dim * rank * 4  # float32
-            total_memory += memory_per_layer
+        # Determine which layers to validate
+        if split_point is not None:
+            layers_to_check = list(range(split_point))
+        else:
+            layers_to_check = list(range(len(ranks)))
         
-        memory_mb = total_memory / (1024 * 1024)
-        available_mb = device_profile['memory_mb'] * 0.5  # 50% reserved for base
+        # Calculate total adapter memory: Σ(2·d·r_ℓ·b)
+        total_adapter_memory = 0.0
+        for layer_idx in layers_to_check:
+            rank = ranks[layer_idx]
+            memory = self.compute_rank_memory(rank)
+            total_adapter_memory += memory
         
-        is_valid = memory_mb <= available_mb
+        # Compute budget
+        C_mem = self.compute_adapter_memory_budget(device_profile['memory_mb'])
         
-        return is_valid, memory_mb
+        # Check constraint
+        is_valid = total_adapter_memory <= C_mem
+        
+        # Convert to MB for readability
+        adapter_mb = total_adapter_memory / (1024 * 1024)
+        budget_mb = C_mem / (1024 * 1024)
+        
+        # Return validation result and memory usage
+        return is_valid, adapter_mb
+
+    def get_memory_breakdown(self, ranks: List[int], 
+                            device_profile: Dict,
+                            split_point: Optional[int] = None) -> Dict:
+        """
+        Get detailed memory breakdown.
+        
+        Args:
+            ranks: List of ranks per layer
+            device_profile: Device profile
+            split_point: If specified, only validate client-side layers
+            
+        Returns:
+            Dictionary with detailed breakdown
+        """
+        # Determine which layers to validate
+        if split_point is not None:
+            layers_to_check = list(range(split_point))
+        else:
+            layers_to_check = list(range(len(ranks)))
+        
+        # Calculate total adapter memory
+        total_adapter_memory = 0.0
+        for layer_idx in layers_to_check:
+            rank = ranks[layer_idx]
+            memory = self.compute_rank_memory(rank)
+            total_adapter_memory += memory
+        
+        C_mem = self.compute_adapter_memory_budget(device_profile['memory_mb'])
+        adapter_mb = total_adapter_memory / (1024 * 1024)
+        budget_mb = C_mem / (1024 * 1024)
+        
+        M_device = device_profile['memory_mb']
+        breakdown = {
+            'total_device_memory_mb': M_device,
+            'base_model_reserved_mb': M_device * self.alpha_base,
+            'activations_reserved_mb': M_device * self.alpha_act,
+            'optimizer_reserved_mb': M_device * self.alpha_opt,
+            'adapter_budget_mb': budget_mb,
+            'adapter_used_mb': adapter_mb,
+            'utilization_percent': (adapter_mb / budget_mb * 100) if budget_mb > 0 else 0,
+        }
+        
+        return breakdown
 
 
 def visualize_rank_allocation(ranks: List[int], importance_scores: Dict,

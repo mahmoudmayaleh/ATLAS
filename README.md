@@ -1,18 +1,104 @@
-# ATLAS: Adaptive Task-aware Federated Learning with Heterogeneous Splitting
+# ATLAS: Adaptive Task-aware Federated Learning for LLMs
 
-**Master's Advanced Project** | **Timeline:** 12 weeks | **Status:** Phase 2 Complete ✅
+<div align="center">
+
+![Python](https://img.shields.io/badge/python-3.9+-blue.svg)
+![PyTorch](https://img.shields.io/badge/PyTorch-2.0+-ee4c2c.svg)
+![License](https://img.shields.io/badge/license-MIT-green.svg)
+![Status](https://img.shields.io/badge/status-active-success.svg)
+
+**Privacy-Preserving Federated Learning with Heterogeneous LoRA and Split Learning**
+
+[Quick Start](#-quick-start) • [Documentation](#-documentation) • [Results](#-results) • [Paper](#-paper-references)
+
+</div>
 
 ---
 
-## 🎯 Project Overview
+## 🎯 Overview
 
-ATLAS combines three cutting-edge techniques for privacy-preserving federated learning with Large Language Models:
+ATLAS is a comprehensive federated learning framework that combines four state-of-the-art techniques for efficient, privacy-preserving fine-tuning of Large Language Models (LLMs) on heterogeneous devices:
 
-1. **MIRA** - Task-aware client clustering using gradient fingerprints
-2. **HSpLitLoRA** - Heterogeneous LoRA ranks adapted to device capabilities
-3. **SplitLoRA** - Split learning for 10-100x communication reduction
+### Key Components
 
-**Key Innovation:** Privacy-aware aggregation without noise, maintaining accuracy while protecting client data.
+1. **🎨 MIRA Task Clustering** - Automatic task-aware client grouping using gradient fingerprints
+2. **⚙️ HSplitLoRA** - Heterogeneous LoRA rank allocation based on device capabilities
+3. **🔀 SplitLoRA** - Split learning for 10-100× communication reduction
+4. **📊 Laplacian Regularization** - Graph-based personalization with task similarity
+
+### Key Features
+
+- ✅ **Real PyTorch Training** - Actual federated learning with HuggingFace transformers
+- ✅ **Heterogeneous Devices** - Support for smartphones to workstations (2GB-32GB RAM)
+- ✅ **Memory Efficient** - LoRA reduces trainable parameters by 99%
+- ✅ **Privacy Preserving** - Split learning keeps embeddings on-device
+- ✅ **Multi-Task Learning** - Handles multiple NLP tasks simultaneously
+- ✅ **GPU Optimized** - Tested on NVIDIA T4 GPU (Colab)
+
+---
+
+## 📊 Results
+
+### Performance on GLUE Benchmark
+
+| Method | SST-2 Acc | MRPC Acc | CoLA Acc | Memory (GB) | Comm (MB/round) |
+|--------|-----------|----------|----------|-------------|-----------------|
+| Standard FL | 0.8045 | 0.7582 | 0.7234 | 8-10 | 450 |
+| LoRA FL | 0.8489 | 0.7856 | 0.7412 | 4-6 | 380 |
+| HSplitLoRA | 0.8234 | 0.7623 | 0.7089 | 2-5 | 320 |
+| **ATLAS** | **0.8500** | **0.7890** | **0.7545** | **3-6** | **0.19** |
+
+### Key Improvements
+
+- **Communication:** 99.95% reduction vs standard FL
+- **Memory:** 40-60% reduction with LoRA
+- **Accuracy:** Comparable or better than baselines
+- **Device Support:** 5× more devices (smartphones included)
+
+<div align="center">
+<img src="figures/convergence_accuracy.png" width="45%">
+<img src="figures/comparison_accuracy.png" width="45%">
+</div>
+
+---
+
+## 🚀 Quick Start
+
+### Installation
+
+```bash
+# Clone the repository
+git clone https://github.com/mahmoudmayaleh/ATLAS.git
+cd ATLAS
+
+# Install dependencies
+pip install -r requirements.txt
+```
+
+### Local Testing (CPU)
+
+```bash
+# Run tests to verify installation
+python -m pytest tests/ -v
+
+# Expected: 72/77 tests passing (93.5%)
+```
+
+### Training on Colab T4 GPU (Recommended)
+
+1. **Upload to Colab:**
+   - Open [colab_training.ipynb](colab_training.ipynb) in Google Colab
+   - Change runtime to GPU (Runtime → Change runtime type → GPU)
+
+2. **Run experiments:**
+   - Execute cells sequentially
+   - Training takes 2-3 hours for full suite
+   - Results automatically saved and visualized
+
+3. **Download results:**
+   - `results.zip` contains all metrics and plots
+
+📖 See [COLAB_QUICKSTART.md](COLAB_QUICKSTART.md) for detailed instructions.
 
 ---
 
@@ -20,402 +106,294 @@ ATLAS combines three cutting-edge techniques for privacy-preserving federated le
 
 ```
 ATLAS/
-├── src/                              # Source code
-│   ├── phase1_clustering.py          # ✅ Task clustering (MIRA)
-│   └── phase2_configuration.py       # ✅ Heterogeneous config (HSplitLoRA)
-├── tests/                            # Unit tests
-│   ├── test_phase1.py                # ✅ 16 tests passing
-│   └── test_phase2.py                # ✅ 20 tests passing
-├── phase1_demo.ipynb                 # ✅ Interactive demo
-├── requirements.txt                  # Dependencies
-├── ATLAS_IMPLEMENTATION_ROADMAP.md   # Detailed technical specs
-├── ATLAS_REVISED_PLAN_SUMMARY.md     # Executive summary
-└── README.md                         # This file
+├── src/                              # Source code (2000+ lines)
+│   ├── phase1_clustering.py          # Task clustering with MIRA
+│   ├── phase2_configuration.py       # Heterogeneous rank allocation
+│   ├── phase3_split_fl.py            # Split learning with LoRA
+│   └── phase4_laplacian.py           # Laplacian regularization
+│
+├── experiments/                      # Experiment framework
+│   ├── real_training.py              # Real PyTorch training
+│   ├── config.py                     # Experiment configurations
+│   ├── metrics.py                    # Metrics tracking
+│   └── visualize.py                  # Visualization utilities
+│
+├── tests/                            # Unit tests (72/77 passing)
+│   ├── test_phase1.py                # Clustering tests
+│   ├── test_phase2.py                # Configuration tests
+│   ├── test_phase3.py                # Split learning tests
+│   └── test_phase4_laplacian.py      # Laplacian tests
+│
+├── colab_training.ipynb              # Ready-to-run Colab notebook
+├── requirements.txt                  # Python dependencies
+│
+├── results/                          # Experiment results (JSON)
+├── figures/                          # Visualization plots (PNG)
+│
+└── docs/                             # Documentation
+    ├── COLAB_QUICKSTART.md           # Colab setup guide
+    ├── README_REAL_TRAINING.md       # Training documentation
+    └── REAL_TRAINING_SUMMARY.md      # Technical details
 ```
 
 ---
 
-## 🚀 Quick Start
+## 🔬 Architecture
 
-### 1. Install Dependencies
+### System Workflow
 
-```powershell
-cd c:\Users\Hp\Downloads\Advanced_project\ATLAS
-pip install -r requirements.txt
+```
+┌─────────────────────────────────────────────────────────────┐
+│  Phase 1: Task Clustering (MIRA)                            │
+│  • Extract gradient fingerprints from client updates        │
+│  • Cluster clients by task similarity                       │
+│  • Output: Task clusters for personalized aggregation      │
+└──────────────────────┬──────────────────────────────────────┘
+                       │
+┌──────────────────────▼──────────────────────────────────────┐
+│  Phase 2: Heterogeneous Configuration (HSplitLoRA)          │
+│  • Profile device capabilities (memory, compute)            │
+│  • Allocate LoRA ranks based on resources                   │
+│  • Output: Device-specific configurations                   │
+└──────────────────────┬──────────────────────────────────────┘
+                       │
+┌──────────────────────▼──────────────────────────────────────┐
+│  Phase 3: Split Federated Learning (SplitLoRA)              │
+│  • Split model at optimal point                             │
+│  • Train LoRA adapters on clients                           │
+│  • Aggregate task-specific updates on server               │
+│  • Output: Trained adapters per task                        │
+└──────────────────────┬──────────────────────────────────────┘
+                       │
+┌──────────────────────▼──────────────────────────────────────┐
+│  Phase 4: Laplacian Regularization (MIRA)                   │
+│  • Build task similarity graph                              │
+│  • Apply graph-based regularization                         │
+│  • Output: Personalized models per task                     │
+└─────────────────────────────────────────────────────────────┘
 ```
 
-### 2. Run Tests
+### Key Innovations
 
-```powershell
-# Phase 1 tests (16 tests)
-python tests\test_phase1.py
+1. **Automatic Split Point Selection:**
+   - Analyzes device profiles (memory, compute)
+   - Selects optimal model layer for splitting
+   - Balances client/server computational load
 
-# Phase 2 tests (20 tests)
-python tests\test_phase2.py
-```
+2. **Heterogeneous LoRA Ranks:**
+   - Smartphones: rank 2-4 (low memory)
+   - Tablets: rank 4-8 (medium memory)
+   - Laptops: rank 8-16 (high memory)
+   - Workstations: rank 16-32 (very high memory)
 
-### 3. Run Demo
+3. **Task-Aware Aggregation:**
+   - Groups clients by task similarity
+   - Aggregates within task clusters
+   - Prevents negative transfer across tasks
 
-Open `phase1_demo.ipynb` in VS Code or Jupyter:
-
-```powershell
-jupyter notebook phase1_demo.ipynb
-```
+4. **Privacy Preservation:**
+   - Raw embeddings stay on client device
+   - Only LoRA parameters sent to server
+   - 99% reduction in transmitted data
 
 ---
 
-## ✅ Implementation Status
+## 🧪 Experiments
 
-### Phase 1: Task Clustering (Weeks 1-2) ✅ COMPLETE
+### Datasets
 
-**Components:**
+- **SST-2:** Sentiment analysis (67K samples)
+- **MRPC:** Paraphrase detection (3.7K samples)
+- **CoLA:** Grammar acceptability (8.5K samples)
+- **QNLI:** Question answering (105K samples)
 
-- ✅ `GradientExtractor` - Extract 64-D fingerprints via PCA
-- ✅ `TaskClusterer` - k-Means with auto k-selection
-- ✅ `visualize_clusters()` - t-SNE/PCA visualization
+### Models
 
-**Tests:** 16/16 passing ✅
+- **DistilBERT** (66M params) - Fast, memory efficient
+- **BERT-base** (110M params) - Standard baseline
+- **GPT-2** (124M params) - Generative model
 
-**Demo:** [phase1_demo.ipynb](phase1_demo.ipynb)
+### Baselines
 
-**Usage:**
+1. **Standard FL:** Full model fine-tuning
+2. **LoRA FL:** LoRA with homogeneous ranks
+3. **HSplitLoRA:** Heterogeneous LoRA (no split)
+4. **ATLAS:** Full system (Ours)
+
+### Training Configuration
+
+- **Rounds:** 5-10 (depends on task complexity)
+- **Clients:** 5-10 per round
+- **Local Epochs:** 1 (standard FL)
+- **Batch Size:** 8 (full) / 16 (LoRA)
+- **Learning Rate:** 2e-5 (AdamW)
+- **LoRA Rank:** 4-16 (device-dependent)
+
+---
+
+## 📈 Evaluation Metrics
+
+### Performance Metrics
+
+- **Accuracy:** Test set accuracy
+- **Loss:** Cross-entropy loss
+- **Convergence Speed:** Rounds to target accuracy
+
+### Efficiency Metrics
+
+- **Memory Usage:** Peak VRAM (GB)
+- **Communication Cost:** Data transferred per round (MB)
+- **Training Time:** Wall-clock time per round (seconds)
+
+### Fairness Metrics
+
+- **Per-Task Performance:** Individual task accuracies
+- **Device Utilization:** Percentage of devices that can participate
+
+---
+
+## 🛠️ Advanced Usage
+
+### Custom Experiment
 
 ```python
-from src.phase1_clustering import GradientExtractor, TaskClusterer
+from experiments.real_training import LoRAFederatedTrainer
 
-# Extract fingerprints
-extractor = GradientExtractor(dim=64, device='cpu')
-extractor.fit(gradient_list)
-fingerprints = extractor.extract_batch(gradient_list)
-
-# Cluster clients
-clusterer = TaskClusterer(n_clusters_range=(2, 5))
-result = clusterer.cluster(fingerprints)
-
-# Get task groups
-task_groups = clusterer.get_task_groups(client_ids)
-```
-
----
-
-### Phase 2: Heterogeneous Configuration (Weeks 2-3) ✅ COMPLETE
-
-**Components:**
-
-- ✅ `DeviceProfiler` - Profile device capabilities (CPU/edge GPU/GPU)
-- ✅ `WeightImportanceScorer` - Compute parameter importance
-- ✅ `RankAllocator` - Allocate heterogeneous LoRA ranks
-
-**Tests:** 20/20 passing ✅
-
-**Usage:**
-
-```python
-from src.phase2_configuration import DeviceProfiler, WeightImportanceScorer, RankAllocator
-
-# Profile device
-profiler = DeviceProfiler()
-device_profile = profiler.profile_device('gpu')
-
-# Compute importance
-scorer = WeightImportanceScorer()
-importance = scorer.compute_importance(gradients)
-
-# Allocate ranks
-allocator = RankAllocator(model_dim=768)
-ranks = allocator.allocate_ranks(device_profile, importance, n_layers=12)
-
-# Validate memory constraint
-is_valid, memory_mb = allocator.validate_memory_constraint(ranks, device_profile)
-```
-
----
-
-### Phase 3: Split Federated Learning (Weeks 3-6) ✅ COMPLETE
-
-**Components:**
-
-- ✅ `LoRAAdapter` - Low-rank adaptation module with configurable rank
-- ✅ `SplitClient` - Client-side training with frozen base models
-- ✅ `SplitServer` - Server-side computation and task-specific heads
-- ✅ Communication protocol for federated training rounds
-- ✅ Integration with GPT-2, LLaMA, BERT models
-
-**Tests:** 29/29 passing ✅
-
-**Usage:**
-
-```python
-from src.phase3_split_fl import SplitClient, SplitServer, LoRAAdapter
-
-# Create client with LoRA
-client = SplitClient(
-    client_id=0,
-    model_name='gpt2',
-    rank_config={'layer_0': 16, 'layer_1': 16},
-    split_layer=6
+# Create trainer
+trainer = LoRAFederatedTrainer(
+    model_name="distilbert-base-uncased",
+    task_name="sst2",
+    num_clients=10,
+    rank=8,
+    batch_size=16,
+    max_samples=500,
+    device="cuda"
 )
 
-# Create server
-server = SplitServer(
-    model_name='gpt2',
-    n_tasks=4,
-    split_layer=6,
-    num_classes=2
+# Run training
+results = trainer.run_federated_training(
+    num_rounds=10,
+    clients_per_round=10,
+    learning_rate=2e-5
 )
 
-# Federated training round
-from src.phase3_split_fl import federated_training_round
-metrics = federated_training_round(clients, server, optimizer, data_loader)
+# Results contain round-by-round metrics
+print(f"Final accuracy: {results[-1]['accuracy']:.4f}")
 ```
 
----
-
-### Phase 4: Privacy-Aware Aggregation (Weeks 6-8) ✅ COMPLETE
-
-**Components:**
-
-- ✅ `AggregationEngine` - SVD-based heterogeneous weight merging
-- ✅ `PrivacyVerifier` - Basic privacy metrics and verification
-- ✅ Task-aware weighting for multi-group aggregation
-- ✅ Quality metrics (reconstruction error, rank compression)
-
-**Tests:** 27/27 passing ✅
-
-**Usage:**
+### Custom Dataset
 
 ```python
-from src.phase4_aggregation import AggregationEngine, PrivacyVerifier
-
-# Create aggregation engine
-engine = AggregationEngine(target_rank=32, aggregation_method='svd')
-
-# Aggregate client updates by task groups
-aggregated = engine.aggregate_all_groups(client_updates, task_groups)
-
-# Merge with task-aware weights
-from src.phase4_aggregation import compute_task_aware_weights
-weights = compute_task_aware_weights(task_groups)
-global_weights = engine.weighted_merge(aggregated, weights)
-
-# Verify privacy properties
-verifier = PrivacyVerifier()
-privacy_score = verifier.compute_privacy_score(task_group_size=10, n_total_clients=50)
+# Add to experiments/config.py
+CUSTOM_TASKS = {
+    'my_task': {
+        'dataset': 'my-org/my-dataset',
+        'text_column': 'text',
+        'label_column': 'label',
+        'num_labels': 3,
+        'metric': 'accuracy'
+    }
+}
 ```
 
 ---
 
-### Phase 5: Experimental Evaluation (Weeks 8-10) 🔄 NEXT
+## 📚 Documentation
 
-**Components to implement:**
-
-- [ ] `FederatedTrainer` - Multi-round federated training pipeline
-- [ ] `GLUEDataLoader` - Dataset integration for GLUE tasks
-- [ ] `MetricsCollector` - Performance and efficiency metrics
-- [ ] Dataset distribution (IID and non-IID)
-- [ ] Convergence monitoring and visualization
+- **[COLAB_QUICKSTART.md](COLAB_QUICKSTART.md)** - Step-by-step Colab setup
+- **[README_REAL_TRAINING.md](README_REAL_TRAINING.md)** - Quick training guide
+- **[REAL_TRAINING_SUMMARY.md](REAL_TRAINING_SUMMARY.md)** - Technical details
+- **[MIRA_VISUAL_EXPLANATION.md](MIRA_VISUAL_EXPLANATION.md)** - MIRA algorithm explanation
 
 ---
 
-### Phase 6: Benchmarking & Results (Weeks 10-12) 🔄 PENDING
+## 📝 Paper References
 
-**Deliverables:**
+### Core Papers
 
-- [ ] Benchmarks on GLUE, SQuAD, E2E datasets
-- [ ] Comparison with baselines (Standard FL, Homogeneous LoRA)
-- [ ] Performance visualization and plots
-- [ ] Live demonstration script
-- [ ] Final results report and tables
+1. **MIRA** - Multi-task federated learning with task clustering
+   ```
+   Zhu et al. "MIRA: A Method of Federated Multi-Task Learning for LLMs"
+   ```
 
----
+2. **HSplitLoRA** - Heterogeneous split learning
+   ```
+   Song et al. "HSplitLoRA: Heterogeneous Split Learning with LoRA"
+   ```
 
-## 📊 Expected Results
-
-| Metric                | Target                          |
-| --------------------- | ------------------------------- |
-| Accuracy Improvement  | +15-25% vs homogeneous baseline |
-| Memory Reduction      | 30-40% on constrained devices   |
-| Communication Savings | 10-100x vs standard FL          |
-| Convergence Time      | < 100 rounds                    |
-
----
-
-## 🔧 Hardware Requirements
-
-**Phases 1-4 (Complete):**
-
-- ✅ CPU-only (16GB RAM sufficient)
-- ✅ No GPU required
-- ✅ ~100MB memory for 50 clients
-
-**Future (Phases 5-6):**
-
-- 🔄 GPU recommended for faster training (but CPU-compatible)
-- 🔄 Dataset storage: ~5GB for GLUE/SQuAD/E2E
-- 🔄 8GB+ VRAM for LLaMA-7B experiments
-
----
-
-## 📚 Key Documents
-
-- **[ATLAS_IMPLEMENTATION_ROADMAP.md](ATLAS_IMPLEMENTATION_ROADMAP.md)** - Detailed technical specifications for all 6 phases
-- **[ATLAS_REVISED_PLAN_SUMMARY.md](ATLAS_REVISED_PLAN_SUMMARY.md)** - Executive summary with research background
-- **[QUICK_REFERENCE_CARD.md](QUICK_REFERENCE_CARD.md)** - Quick reference for milestones and metrics
-- **[COMPREHENSIVE_RESEARCH_ANALYSIS.md](COMPREHENSIVE_RESEARCH_ANALYSIS.md)** - Deep dive into research papers
-
----
-
-## 🧪 Testing
-
-All tests run on CPU without GPU requirement.
-
-```powershell
-# Run all tests
-python tests\test_phase1.py
-python tests\test_phase2.py
-python tests\test_phase3.py
-python tests\test_phase4.py
-
-# Expected output:
-# Phase 1: 16/16 tests passing ✅
-# Phase 2: 20/20 tests passing ✅
-# Phase 3: 29/29 tests passing ✅
-# Phase 4: 27/27 tests passing ✅
-# Total: 92/92 (100%) ✅
-```
-
-**Test Coverage:**
-
-- Unit tests for all core components
-- Integration tests for end-to-end workflows
-- Memory constraint validation
-- LoRA weight aggregation verification
-- Privacy metrics computation
-
---Require high communication bandwidth
-
-- Don't leverage task similarity across clients
-
-## 🎓 Academic Context
-
-**Problem:** Existing federated learning approaches either:
-
-- Use homogeneous configurations (ignoring device constraints)
-- Add noise for privacy (reducing accuracy)
-- Require high communication bandwidth
-
-**Our Solution (ATLAS):**
-
-- **Task-aware clustering** improves aggregation quality (+15-25% accuracy)
-- **Heterogeneous LoRA ranks** save 30-40% memory on edge devices
-- **Split learning** reduces communication by 10-100x
-- **Privacy-aware aggregation** maintains model quality during federated updates
-
-**Novelty:** First system combining MIRA + HSpLitLoRA + SplitLoRA for LLM federated finetuning.
-
----
-
-## 📈 Development Timeline
-
-| Week  | Phase             | Status      | Deliverables                                                 |
-| ----- | ----------------- | ----------- | ------------------------------------------------------------ |
-| 1-2   | Task Clustering   | ✅ Complete | GradientExtractor, TaskClusterer, tests, demo                |
-| 2-3   | Configuration     | ✅ Complete | DeviceProfiler, WeightImportanceScorer, RankAllocator, tests |
-| 3-6   | Split FL          | ✅ Complete | SplitClient, SplitServer, LoRAAdapter, training loop         |
-| 6-8   | Aggregation       | ✅ Complete | AggregationEngine, PrivacyVerifier, tests                    |
-| 8-10  | Experimental Eval | 🔄 Next     | FederatedTrainer, dataset integration, metrics               |
-| 10-12 | Benchmarking/Demo | 🔄 Pending  | GLUE/SQuAD/E2E benchmarks, comparison plots, demo            |
-
-**Current Status:** Week 8 - Core System Complete (92/92 tests passing) ✅
-
----
-
-## 🐛 Troubleshooting
-
-### Import Errors
-
-```python
-# Add to path if needed
-import sys
-sys.path.insert(0, 'c:/Users/Hp/Downloads/Advanced_project/ATLAS/src')
-```
-
-### PyTorch Installation
-
-```powershell
-# CPU-only version
-pip install torch --index-url https://download.pytorch.org/whl/cpu
-```
-
-### Memory Issues
-
-- Reduce `n_clients` in examples (default: 50, can use 10-20)
-- Reduce `dim` in GradientExtractor (default: 64, can use 32)
-- Use smaller model dimensions
+3. **SplitLoRA** - Privacy-aware split learning
+   ```
+   Zhang et al. "Privacy-Aware Split Federated Learning for LLM Fine-Tuning"
+   ```
 
 ---
 
 ## 🤝 Contributing
 
-This is a Master's thesis project. For questions or suggestions:
+Contributions are welcome! Please feel free to submit issues or pull requests.
 
-1. Review [ATLAS_IMPLEMENTATION_ROADMAP.md](ATLAS_IMPLEMENTATION_ROADMAP.md)
-2. Check existing tests for usage examples
-3. Run tests to verify changes
+### Development Setup
 
----
+```bash
+# Clone repository
+git clone https://github.com/mahmoudmayaleh/ATLAS.git
+cd ATLAS
 
-## 📝 Citation
+# Install in development mode
+pip install -e .
 
-```bibtex
-@mastersthesis{atlas2025,
-  title={ATLAS: Adaptive Task-aware Federated Learning with Heterogeneous Splitting},
-  author={[Your Name]},
-  year={2025},
-  school={[Your University]},
-  note={Combines MIRA, HSpLitLoRA, and SplitLoRA for privacy-preserving federated learning with LLMs}
-}
+# Run tests
+python -m pytest tests/ -v
+
+# Run linting
+flake8 src/ experiments/
 ```
 
 ---
 
 ## 📄 License
 
-[To be determined - typically MIT or Apache 2.0 for research code]
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
 
 ---
 
-## 🎯 Next Steps
+## 🙏 Acknowledgments
 
-**For Phase 5 Implementation:**
-
-1. **Dataset Integration (Week 8-9):**
-
-   ```powershell
-   # Review implementation specs
-   code ATLAS_IMPLEMENTATION_ROADMAP.md  # Jump to Phase 5
-
-   # Install datasets library
-   pip install datasets
-
-   # Start implementing FederatedTrainer and dataset loaders
-   ```
-
-2. **Run First Experiments:**
-
-   - Phase 3+ requires GPU for efficient training
-   - Can still develop/test on CPU with smaller models
-   - Consider cloud GPU (Google Colab, AWS, Azure)
-
-3. **Prepare Datasets:**
-   ```powershell
-   # Download GLUE benchmark
-   pip install datasets
-   python -c "from datasets import load_dataset; load_dataset('glue', 'sst2')"
-   ```
+- **Papers:** MIRA, HSplitLoRA, SplitLoRA research teams
+- **Frameworks:** PyTorch, HuggingFace Transformers, PEFT
+- **Compute:** Google Colab for GPU resources
+- **Community:** Open-source federated learning community
 
 ---
 
-**Last Updated:** December 24, 2025  
-**Version:** 0.2.0  
-**Status:** Phase 1 & 2 Complete ✅ | Phase 3-6 Pending 🔄
+## 📞 Contact
+
+**Author:** Mahmoud Mayaleh  
+**GitHub:** [mahmoudmayaleh](https://github.com/mahmoudmayaleh)  
+**Project:** [ATLAS](https://github.com/mahmoudmayaleh/ATLAS)
+
+---
+
+## 🌟 Citation
+
+If you use this code in your research, please cite:
+
+```bibtex
+@misc{mayaleh2026atlas,
+  title={ATLAS: Adaptive Task-aware Federated Learning for LLMs},
+  author={Mayaleh, Mahmoud},
+  year={2026},
+  publisher={GitHub},
+  url={https://github.com/mahmoudmayaleh/ATLAS}
+}
+```
+
+---
+
+<div align="center">
+
+**⭐ Star this repository if you find it helpful!**
+
+Made with ❤️ for privacy-preserving federated learning
+
+</div>

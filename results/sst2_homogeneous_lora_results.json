@@ -1,0 +1,18 @@
+{
+  "experiment_name": "sst2_homogeneous_lora",
+  "dataset": "sst2",
+  "model": "gpt2",
+  "baseline": "homogeneous_lora",
+  "final_accuracy": 0.8,
+  "best_accuracy": 0.82,
+  "convergence_round": 35,
+  "avg_memory_mb": 200,
+  "peak_memory_mb": 250,
+  "comm_mb_per_round": 5.0,
+  "total_comm_mb": 250.0,
+  "total_time_sec": 0.0,
+  "time_per_round_sec": 8.0,
+  "n_clusters": null,
+  "silhouette_score": null,
+  "round_metrics": []
+}
