@@ -41,12 +41,12 @@ ATLAS is a comprehensive federated learning framework that combines four state-o
 
 ### Performance on GLUE Benchmark
 
-| Method | SST-2 Acc | MRPC Acc | CoLA Acc | Memory (GB) | Comm (MB/round) |
-|--------|-----------|----------|----------|-------------|-----------------|
-| Standard FL | 0.8045 | 0.7582 | 0.7234 | 8-10 | 450 |
-| LoRA FL | 0.8489 | 0.7856 | 0.7412 | 4-6 | 380 |
-| HSplitLoRA | 0.8234 | 0.7623 | 0.7089 | 2-5 | 320 |
-| **ATLAS** | **0.8500** | **0.7890** | **0.7545** | **3-6** | **0.19** |
+| Method      | SST-2 Acc  | MRPC Acc   | CoLA Acc   | Memory (GB) | Comm (MB/round) |
+| ----------- | ---------- | ---------- | ---------- | ----------- | --------------- |
+| Standard FL | 0.8045     | 0.7582     | 0.7234     | 8-10        | 450             |
+| LoRA FL     | 0.8489     | 0.7856     | 0.7412     | 4-6         | 380             |
+| HSplitLoRA  | 0.8234     | 0.7623     | 0.7089     | 2-5         | 320             |
+| **ATLAS**   | **0.8500** | **0.7890** | **0.7545** | **3-6**     | **0.19**        |
 
 ### Key Improvements
 
@@ -312,11 +312,13 @@ CUSTOM_TASKS = {
 ### Core Papers
 
 1. **MIRA** - Multi-task federated learning with task clustering
+
    ```
    Zhu et al. "MIRA: A Method of Federated Multi-Task Learning for LLMs"
    ```
 
 2. **HSplitLoRA** - Heterogeneous split learning
+
    ```
    Song et al. "HSplitLoRA: Heterogeneous Split Learning with LoRA"
    ```
