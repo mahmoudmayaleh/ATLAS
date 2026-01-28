@@ -493,9 +493,31 @@ class ATLASIntegratedTrainer:
         for cluster_id in set(cluster_labels.values()):
             task_clusters[cluster_id] = [cid for cid, label in cluster_labels.items() if label == cluster_id]
         
+        # Build adjacency weights via k-NN on fingerprints
+        all_clients = sorted([c for clients in task_clusters.values() for c in clients])
+        n_clients = len(all_clients)
+        fps_matrix = np.vstack([fingerprints[cid] for cid in all_clients])
+
+        # Cosine similarity
+        normed = fps_matrix / (np.linalg.norm(fps_matrix, axis=1, keepdims=True) + 1e-12)
+        sim = normed @ normed.T
+
+        # Keep only top-k neighbors per client
+        k = max(1, int(self.config.k_neighbors))
+        adj = np.zeros_like(sim)
+        for i in range(n_clients):
+            # exclude self
+            sim[i, i] = -1.0
+            topk = np.argsort(sim[i])[-k:]
+            for j in topk:
+                if sim[i, j] > 0:
+                    adj[i, j] = float(sim[i, j])
+
         task_graph = TaskGraph.from_task_clusters(
             task_clusters=task_clusters,
-            k_neighbors=self.config.k_neighbors
+            adjacency_weights=adj,
+            normalize=True,
+            symmetrize=True
         )
         
         # Initialize Laplacian aggregator
