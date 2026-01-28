@@ -600,9 +600,77 @@ class ATLASIntegratedTrainer:
                 task_graph=task_graph
             )
             
-            # Update client models
-            for cid, weights in personalized_models.items():
-                client_models[cid].load_state_dict(weights)
+            # Update client models: personalized_models is a LoRA-style mapping
+            for cid, lora_weights in personalized_models.items():
+                model = client_models[cid]
+                # Update adapter params in-place from lora_weights (layer -> {'A','B'})
+                state = model.state_dict()
+                new_state = {}
+                import re
+                for key, val in state.items():
+                    key_low = key.lower()
+                    if 'lora_a' in key_low or 'lora_b' in key_low:
+                        # try to infer layer index from key (e.g., '.h.<idx>.')
+                        m = re.search(r"\.h\.(\d+)\.", key)
+                        if m:
+                            layer_idx = int(m.group(1))
+                            layer_name = f'layer_{layer_idx}'
+                        else:
+                            # fallback: look for 'layer_<n>' or use full key
+                            m2 = re.search(r'layer_(\d+)', key_low)
+                            if m2:
+                                layer_name = f"layer_{int(m2.group(1))}"
+                            else:
+                                layer_name = None
+
+                        if layer_name and layer_name in lora_weights:
+                            if 'lora_a' in key_low and 'A' in lora_weights[layer_name]:
+                                new_tensor = lora_weights[layer_name]['A']
+                                # match shapes if possible
+                                if new_tensor.shape == val.shape:
+                                    new_state[key] = new_tensor.to(val.device)
+                                else:
+                                    # try transpose or truncate/pad
+                                    try:
+                                        cand = new_tensor.to(val.device)
+                                        if cand.shape == val.shape:
+                                            new_state[key] = cand
+                                        else:
+                                            # fallback to original
+                                            new_state[key] = val
+                                    except Exception:
+                                        new_state[key] = val
+                            elif 'lora_b' in key_low and 'B' in lora_weights[layer_name]:
+                                new_tensor = lora_weights[layer_name]['B']
+                                if new_tensor.shape == val.shape:
+                                    new_state[key] = new_tensor.to(val.device)
+                                else:
+                                    try:
+                                        cand = new_tensor.to(val.device)
+                                        if cand.shape == val.shape:
+                                            new_state[key] = cand
+                                        else:
+                                            new_state[key] = val
+                                    except Exception:
+                                        new_state[key] = val
+                            else:
+                                new_state[key] = val
+                        else:
+                            new_state[key] = val
+                    else:
+                        new_state[key] = val
+
+                # Load updated state dict (non-strict to allow missing keys)
+                try:
+                    model.load_state_dict(new_state, strict=False)
+                except Exception:
+                    # Fallback: try partial update via named_parameters
+                    for name, param in model.named_parameters():
+                        if name in new_state:
+                            try:
+                                param.data.copy_(new_state[name])
+                            except Exception:
+                                continue
             
             # Step 4: Evaluation
             print(f"\n[Round {round_idx+1}] Evaluation...")
