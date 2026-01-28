@@ -454,13 +454,12 @@ class ATLASIntegratedTrainer:
             cluster_variance = cluster_variances.get(cluster_id, 1.0)
             importance_scores = {f'layer_{i}': cluster_variance * (1.0 + 0.1 * i) for i in range(6)}
             
-            # Allocate ranks
+            # Allocate ranks (DistilBERT has 6 transformer layers)
             lora_ranks = self.rank_allocator.allocate_ranks(
                 device_profile=device_profile,
                 importance_scores=importance_scores,
-                alpha_base=self.config.alpha_base,
-                alpha_act=self.config.alpha_act,
-                alpha_opt=self.config.alpha_opt
+                n_layers=6,
+                split_point=None
             )
             
             device_configs[client_data.client_id] = {
@@ -471,8 +470,7 @@ class ATLASIntegratedTrainer:
             
             client_data.lora_ranks = lora_ranks
             
-            rank_summary = list(lora_ranks.values())
-            print(f"  Client {client_data.client_id} ({device_type}): ranks {rank_summary}")
+            print(f"  Client {client_data.client_id} ({device_type}): ranks {lora_ranks}")
         
         print(f"  ✓ Allocated heterogeneous ranks for {len(device_configs)} clients")
         return device_configs
