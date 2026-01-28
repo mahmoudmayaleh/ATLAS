@@ -212,8 +212,8 @@ class RealFederatedTrainer:
         
         avg_loss = total_loss / max(num_batches, 1)
         
-        # Return updated weights (only return parameters that require gradients for LoRA)
-        weights = {name: param.data.clone() for name, param in model.named_parameters() if param.requires_grad or 'classifier' in name or 'score' in name}
+        # Return ALL weights (aggregation will handle which to average vs keep frozen)
+        weights = {name: param.data.clone() for name, param in model.named_parameters()}
         return weights, avg_loss
     
     def aggregate_weights(
