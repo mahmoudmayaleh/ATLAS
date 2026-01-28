@@ -55,6 +55,7 @@ from torch.utils.data import DataLoader, Subset
 from transformers import AutoTokenizer, AutoModelForSequenceClassification
 from datasets import load_dataset
 import numpy as np
+from sklearn.metrics import f1_score
 from typing import Dict, List, Tuple, Optional
 import time
 import json
@@ -620,6 +621,9 @@ class ATLASIntegratedTrainer:
             # Step 1: Local training (each client trains own model)
             print(f"[Round {round_idx+1}] Local training...")
             round_losses = {}
+            # Communication counters (bytes) for this round
+            comm_upload = {c.client_id: 0 for c in self.clients_data}
+            comm_download = {c.client_id: 0 for c in self.clients_data}
             
             for client_data in self.clients_data:
                 cid = client_data.client_id
@@ -633,6 +637,13 @@ class ATLASIntegratedTrainer:
                     task_name=client_data.task_name
                 )
                 round_losses[cid] = loss
+                # Measure upload size: sum bytes of trainable params (LoRA adapters + classifier)
+                up_bytes = 0
+                for name, param in model.named_parameters():
+                    low = name.lower()
+                    if ('lora' in low) or ('classifier' in low) or ('score' in low):
+                        up_bytes += param.numel() * param.element_size()
+                comm_upload[cid] = int(up_bytes)
             
             # Step 2: Task-aware aggregation (within clusters)
             print(f"\n[Round {round_idx+1}] Task-aware aggregation...")
@@ -654,6 +665,21 @@ class ATLASIntegratedTrainer:
                 lora_struct = self._flat_state_to_lora(avg_weights)
                 for cid in client_ids:
                     aggregated_models[cid] = lora_struct
+
+            # After aggregation, measure download size per client (server -> clients)
+            for cid in aggregated_models:
+                # aggregated_models[cid] is a dict layer->{'A','B'} tensors
+                total_bytes = 0
+                for layer_name, parts in aggregated_models[cid].items():
+                    for k, t in parts.items():
+                        if isinstance(t, (np.ndarray,)):
+                            total_bytes += t.nbytes
+                        else:
+                            try:
+                                total_bytes += int(t.numel() * t.element_size())
+                            except Exception:
+                                continue
+                comm_download[cid] = int(total_bytes)
             
             # Step 3: Laplacian regularization (personalization)
             print(f"\n[Round {round_idx+1}] Applying Laplacian regularization...")
@@ -737,15 +763,17 @@ class ATLASIntegratedTrainer:
             # Step 4: Evaluation
             print(f"\n[Round {round_idx+1}] Evaluation...")
             round_accuracies = {}
+            round_f1s = {}
             
             for client_data in self.clients_data:
                 cid = client_data.client_id
-                acc, loss = self._evaluate_client(
+                acc, loss, f1 = self._evaluate_client(
                     client_models[cid],
                     client_data.test_dataset
                 )
                 round_accuracies[cid] = acc
-                print(f"  Client {cid} ({client_data.task_name}): acc={acc:.4f}, loss={loss:.4f}")
+                round_f1s[cid] = f1
+                print(f"  Client {cid} ({client_data.task_name}): acc={acc:.4f}, f1={f1:.4f}, loss={loss:.4f}")
             
             round_time = time.time() - round_start
             
@@ -754,9 +782,13 @@ class ATLASIntegratedTrainer:
                 'round': round_idx + 1,
                 'train_losses': round_losses,
                 'test_accuracies': round_accuracies,
+                'test_f1': round_f1s,
                 'avg_accuracy': np.mean(list(round_accuracies.values())),
                 'time_seconds': round_time
             })
+            # Attach communication metrics for this round
+            results['round_metrics'][-1]['comm_upload_bytes'] = comm_upload
+            results['round_metrics'][-1]['comm_download_bytes'] = comm_download
             
             print(f"\n[Round {round_idx+1}] Avg accuracy: {np.mean(list(round_accuracies.values())):.4f}, Time: {round_time:.1f}s")
             
@@ -914,13 +946,42 @@ class ATLASIntegratedTrainer:
         aggregated = {}
         for key in weights_list[0].keys():
             if key in trainable_keys:
-                # Average trainable parameters
-                stacked = torch.stack([w[key] for w in weights_list])
-                aggregated[key] = stacked.mean(dim=0)
+                # Collect tensors present for this key
+                tensors = [w.get(key) for w in weights_list]
+                # Filter out None
+                tensors_present = [t for t in tensors if t is not None]
+                if not tensors_present:
+                    continue
+
+                # If all tensors have same shape, stack and mean
+                shapes = [tuple(t.shape) for t in tensors_present]
+                if all(s == shapes[0] for s in shapes):
+                    stacked = torch.stack(tensors_present)
+                    aggregated[key] = stacked.mean(dim=0)
+                    continue
+
+                # Handle LoRA adapters with heterogeneous ranks by padding to max shape
+                key_low = key.lower()
+                if 'lora_a' in key_low or 'lora_b' in key_low:
+                    # Determine max shape across tensors
+                    max_shape = [max(s[d] for s in shapes) for d in range(len(shapes[0]))]
+                    padded = []
+                    for t in tensors_present:
+                        pad_tensor = torch.zeros(*max_shape, dtype=t.dtype, device=t.device)
+                        # compute slices to copy
+                        slices = tuple(slice(0, s) for s in t.shape)
+                        pad_tensor[slices] = t
+                        padded.append(pad_tensor)
+                    stacked = torch.stack(padded)
+                    aggregated[key] = stacked.mean(dim=0)
+                    continue
+
+                # Fallback for other mismatched shapes: use first available tensor (no averaging)
+                aggregated[key] = tensors_present[0]
             else:
                 # Keep frozen base model (should be identical)
                 aggregated[key] = weights_list[0][key]
-        
+
         return aggregated
 
     def _flat_state_to_lora(self, state: Dict[str, torch.Tensor]) -> Dict[str, Dict[str, torch.Tensor]]:
