@@ -307,27 +307,47 @@ class ATLASIntegratedTrainer:
         print("[Phase 1] Extracting gradient fingerprints...")
         
         # Create temporary models for fingerprinting
-        fingerprints = {}
-        
+        raw_gradients = {}
+
         for client_data in self.clients_data:
             print(f"  Client {client_data.client_id} ({client_data.task_name})...", end=" ")
-            
+
             # Create model
             _, _, _, num_labels = self.dataset_map[client_data.task_name]
             model = AutoModelForSequenceClassification.from_pretrained(
                 self.config.model_name,
                 num_labels=num_labels
             ).to(self.device)
-            
-            # Extract fingerprint (2-3 epochs of training)
-            fingerprint = self._extract_fingerprint(model, client_data.train_dataset)
-            fingerprints[client_data.client_id] = fingerprint
-            
+
+            # Extract raw gradient vector (tensor)
+            raw_grad = self._extract_fingerprint(model, client_data.train_dataset)
+            raw_gradients[client_data.client_id] = raw_grad
+
             del model
             torch.cuda.empty_cache() if torch.cuda.is_available() else None
-            
-            print(f"✓ fingerprint shape: {fingerprint.shape}")
+
+            print(f"✓ raw grad shape: {raw_grad.shape}")
         
+        # Fit PCA on collected raw gradients and compute fingerprints
+        print(f"\n[Phase 1] Fitting fingerprint PCA on {len(raw_gradients)} samples...")
+        grad_list = [g for g in raw_gradients.values()]
+        try:
+            self.gradient_extractor.fit(grad_list)
+        except Exception as e:
+            print(f"[Phase 1] Warning: gradient extractor fit failed: {e}")
+
+        fingerprints = {}
+        for cid, raw in raw_gradients.items():
+            try:
+                fp = self.gradient_extractor.extract(raw)
+            except Exception:
+                # Fallback: convert to numpy and normalize
+                arr = raw.detach().cpu().numpy() if hasattr(raw, 'detach') else np.asarray(raw)
+                arr = arr.astype(np.float32)
+                norm = np.linalg.norm(arr)
+                fp = arr / (norm + 1e-8)
+            fingerprints[cid] = fp
+
         # Cluster based on fingerprints
         print(f"\n[Phase 1] Clustering {len(fingerprints)} clients...")
         cluster_labels, metrics = self.task_clusterer.cluster(
@@ -385,11 +405,11 @@ class ATLASIntegratedTrainer:
         # Extract fingerprint using GradientExtractor
         if grad_history:
             avg_grad = np.mean(grad_history, axis=0)
-            fingerprint = self.gradient_extractor.extract_from_gradients({'layer': avg_grad})
-            return fingerprint
+            # Return raw gradient tensor (will be PCA-fitted later)
+            return torch.from_numpy(avg_grad).float()
         else:
-            # Fallback: random fingerprint
-            return np.random.randn(self.config.fingerprint_dim)
+            # Fallback: random raw gradient tensor (PCA can handle fallback)
+            return torch.from_numpy(np.random.randn(self.config.fingerprint_dim)).float()
     
     def _phase2_rank_allocation(
         self, 
