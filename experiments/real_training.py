@@ -42,9 +42,9 @@ class RealFederatedTrainer:
         model_name: str,
         task_name: str,
         num_clients: int = 10,
-        local_epochs: int = 5,  # Epochs per FL round (separate from initial 2-3 epoch fingerprinting)
-        batch_size: int = 8,
-        max_samples: int = 5000,  # Realistic dataset size per client for proper training
+        local_epochs: int = 3,  # Balanced: substantial training + GPU efficiency
+        batch_size: int = 16,  # Larger batch for better GPU utilization
+        max_samples: int = 2000,  # GPU-optimized: real training in 10-15 min on T4
         device: str = "cuda" if torch.cuda.is_available() else "cpu"
     ):
         self.model_name = model_name
@@ -517,18 +517,18 @@ def run_quick_experiment(
             task_name=task_name,
             num_clients=num_clients,
             rank=lora_rank,
-            local_epochs=5,  # 5 epochs per FL round for substantial training
-            batch_size=16,  # Larger batch for LoRA
-            max_samples=5000  # Realistic dataset size for proper training (20-30 min runtime)
+            local_epochs=3,  # Balanced for GPU efficiency
+            batch_size=32,  # Large batch for GPU efficiency with LoRA
+            max_samples=2000  # GPU-optimized: real training in 10-15 min
         )
     else:
         trainer = RealFederatedTrainer(
             model_name=model_name,
             task_name=task_name,
             num_clients=num_clients,
-            local_epochs=5,  # 5 epochs per FL round for substantial training
-            batch_size=8,
-            max_samples=5000  # Realistic dataset size for proper training (20-30 min runtime)
+            local_epochs=3,  # Balanced for GPU efficiency
+            batch_size=16,  # Good GPU utilization
+            max_samples=2000  # GPU-optimized: real training in 10-15 min
         )
     
     # Run training
