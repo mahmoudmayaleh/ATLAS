@@ -333,6 +333,10 @@ class TaskClusterer:
         self.n_clusters_range = n_clusters_range
         self.fixed_k = fixed_k
         self.min_cluster_size = min_cluster_size
+        # For temporal consistency (tracks previous clustering)
+        self.prev_labels_ = None
+        # Weight for temporal consistency when selecting best k
+        self.temporal_consistency_weight = 0.0
         self.best_kmeans = None
         self.best_n_clusters = None
         self.best_score = -1.0
