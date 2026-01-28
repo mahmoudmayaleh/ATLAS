@@ -61,6 +61,8 @@ import json
 from dataclasses import dataclass, asdict
 from pathlib import Path
 import pickle
+import contextlib
+import io
 
 # Import all ATLAS phases
 from phase1_clustering import GradientExtractor, TaskClusterer
@@ -352,10 +354,12 @@ class ATLASIntegratedTrainer:
 
             # Create model
             _, _, _, num_labels = self.dataset_map[client_data.task_name]
-            model = AutoModelForSequenceClassification.from_pretrained(
-                self.config.model_name,
-                num_labels=num_labels
-            ).to(self.device)
+            # Suppress transformers stdout/stderr noise during loading
+            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                model = AutoModelForSequenceClassification.from_pretrained(
+                    self.config.model_name,
+                    num_labels=num_labels
+                ).to(self.device)
 
             # Extract raw gradient vector (tensor)
             raw_grad = self._extract_fingerprint(model, client_data.train_dataset)
@@ -572,10 +576,12 @@ class ATLASIntegratedTrainer:
         client_models = {}
         for client_data in self.clients_data:
             _, _, _, num_labels = self.dataset_map[client_data.task_name]
-            model = AutoModelForSequenceClassification.from_pretrained(
-                self.config.model_name,
-                num_labels=num_labels
-            )
+            # Suppress transformers stdout/stderr noise during loading
+            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                model = AutoModelForSequenceClassification.from_pretrained(
+                    self.config.model_name,
+                    num_labels=num_labels
+                )
             # Apply LoRA with heterogeneous ranks
             model = self._apply_heterogeneous_lora(model, client_data.lora_ranks)
             model = model.to(self.device)
