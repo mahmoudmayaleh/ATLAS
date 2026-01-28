@@ -110,7 +110,7 @@ class ATLASConfig:
     
     # Checkpointing
     checkpoint_dir: str = "./checkpoints"
-    save_every: int = 2  # Save every N rounds
+    save_every: int = 1  # Save every N rounds (1 = every round)
     
     def __post_init__(self):
         if self.tasks is None:
@@ -792,10 +792,10 @@ class ATLASIntegratedTrainer:
             
             print(f"\n[Round {round_idx+1}] Avg accuracy: {np.mean(list(round_accuracies.values())):.4f}, Time: {round_time:.1f}s")
             
-            # Checkpoint
-            if (round_idx + 1) % self.config.save_every == 0:
+            # Checkpoint (save every N rounds; use max to avoid division by zero)
+            if (round_idx + 1) % max(1, int(self.config.save_every)) == 0:
                 checkpoint_state = {
-                    'round': round_idx,
+                    'round': round_idx + 1,
                     'cluster_labels': cluster_labels,
                     'clustering_metrics': clustering_metrics,
                     'device_configs': device_configs,
