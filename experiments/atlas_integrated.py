@@ -17,7 +17,37 @@ Supports:
 
 import sys
 import os
+
+# Reduce noisy TensorFlow/XLA and HF/transformers logs before other imports
+# Must set environment vars before importing modules that may load TF or XLA
+os.environ.setdefault('TF_CPP_MIN_LOG_LEVEL', '3')
+os.environ.setdefault('XLA_PYTHON_CLIENT_PREALLOCATE', 'false')
+os.environ.setdefault('TRANSFORMERS_NO_ADVISORY_WARNINGS', '1')
+os.environ.setdefault('HF_HUB_DISABLE_TELEMETRY', '1')
+
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
+
+import logging
+import warnings
+
+# Configure library loggers to be quiet by default
+logging.getLogger('absl').setLevel(logging.ERROR)
+logging.getLogger('tensorflow').setLevel(logging.ERROR)
+logging.getLogger('transformers').setLevel(logging.ERROR)
+logging.getLogger('huggingface_hub').setLevel(logging.ERROR)
+logging.getLogger('urllib3').setLevel(logging.ERROR)
+
+# Also configure transformers' internal logger to error (suppresses 'Some weights ... were not initialized')
+try:
+    from transformers import logging as hf_logging
+    hf_logging.set_verbosity_error()
+except Exception:
+    pass
+
+# Suppress common sklearn UserWarnings from PCA resizing
+warnings.filterwarnings('ignore', message='Reducing n_components', category=UserWarning)
+# Globally suppress other benign warnings raised by helper modules during runs
+warnings.filterwarnings('ignore')
 
 import torch
 import torch.nn as nn
@@ -262,10 +292,11 @@ class ATLASIntegratedTrainer:
             print(f"\n{'='*70}")
             print(f"PHASE 1: TASK CLUSTERING")
             print(f"{'='*70}\n")
-            cluster_labels, fingerprints = self._phase1_clustering()
+            cluster_labels, fingerprints, clustering_metrics = self._phase1_clustering()
         else:
             cluster_labels = checkpoint['cluster_labels']
             fingerprints = checkpoint['fingerprints']
+            clustering_metrics = checkpoint.get('clustering_metrics', {})
             print(f"[RESUME] Loaded clustering from checkpoint")
         
         # ========== PHASE 2: HETEROGENEOUS RANK ALLOCATION ==========
@@ -287,8 +318,14 @@ class ATLASIntegratedTrainer:
             device_configs,
             fingerprints,
             start_round=start_round,
-            checkpoint=checkpoint
+            checkpoint=checkpoint,
+            clustering_metrics=clustering_metrics
         )
+
+        # Persist Phase1/Phase2 metadata into results
+        results['fingerprints'] = fingerprints
+        results['clustering_metrics'] = clustering_metrics
+        results['device_configs'] = device_configs
         
         total_time = time.time() - start_time
         
@@ -300,7 +337,7 @@ class ATLASIntegratedTrainer:
         
         return results
     
-    def _phase1_clustering(self) -> Tuple[Dict[int, int], Dict[int, np.ndarray]]:
+    def _phase1_clustering(self) -> Tuple[Dict[int, int], Dict[int, np.ndarray], Dict]:
         """
         Phase 1: Extract gradient fingerprints and cluster clients.
         Returns: (cluster_labels, fingerprints)
@@ -377,7 +414,9 @@ class ATLASIntegratedTrainer:
         for client_data in self.clients_data:
             client_data.cluster_id = cluster_labels[client_data.client_id]
         
-        return cluster_labels, fingerprints
+        clustering_metrics = metrics if metrics is not None else {}
+
+        return cluster_labels, fingerprints, clustering_metrics
     
     def _extract_fingerprint(self, model: nn.Module, dataset: Subset) -> np.ndarray:
         """Extract gradient fingerprint from a client's local training"""
@@ -482,7 +521,8 @@ class ATLASIntegratedTrainer:
         device_configs: Dict[int, Dict],
         fingerprints: Dict[int, np.ndarray],
         start_round: int = 0,
-        checkpoint: Optional[Dict] = None
+        checkpoint: Optional[Dict] = None,
+        clustering_metrics: Optional[Dict] = None
     ) -> Dict:
         """
         Phase 3 & 4: Split federated learning + Laplacian regularization.
@@ -704,10 +744,11 @@ class ATLASIntegratedTrainer:
                 checkpoint_state = {
                     'round': round_idx,
                     'cluster_labels': cluster_labels,
+                    'clustering_metrics': clustering_metrics,
                     'device_configs': device_configs,
                     'client_models': {cid: model.state_dict() for cid, model in client_models.items()},
                     'results': results,
-                    'fingerprints': None  # Already computed
+                    'fingerprints': fingerprints
                 }
                 self._save_checkpoint(round_idx + 1, checkpoint_state)
         
@@ -956,18 +997,31 @@ if __name__ == "__main__":
     results_path = Path("./results") / f"atlas_integrated_{args.mode}.json"
     results_path.parent.mkdir(parents=True, exist_ok=True)
     
+    def _to_jsonable(obj):
+        if isinstance(obj, np.ndarray):
+            return obj.tolist()
+        if isinstance(obj, (np.integer, np.floating)):
+            return obj.item()
+        try:
+            import torch
+            if isinstance(obj, torch.Tensor):
+                return obj.detach().cpu().tolist()
+        except Exception:
+            pass
+        if isinstance(obj, dict):
+            return {k: _to_jsonable(v) for k, v in obj.items()}
+        if isinstance(obj, list):
+            return [_to_jsonable(v) for v in obj]
+        return obj
+
     with open(results_path, 'w') as f:
-        # Convert numpy values to native Python for JSON
         results_json = {
-            'round_metrics': [
-                {k: (v.item() if isinstance(v, (np.integer, np.floating)) else 
-                     {k2: (v2.item() if isinstance(v2, (np.integer, np.floating)) else float(v2)) 
-                      for k2, v2 in v.items()} if isinstance(v, dict) else float(v))
-                 for k, v in r.items()}
-                for r in results['round_metrics']
-            ],
-            'final_accuracies': {k: float(v) for k, v in results['final_accuracies'].items()},
-            'cluster_labels': results['cluster_labels'],
+            'round_metrics': _to_jsonable(results.get('round_metrics', [])),
+            'final_accuracies': _to_jsonable(results.get('final_accuracies', {})),
+            'cluster_labels': _to_jsonable(results.get('cluster_labels', {})),
+            'fingerprints': _to_jsonable(results.get('fingerprints', {})),
+            'clustering_metrics': _to_jsonable(results.get('clustering_metrics', {})),
+            'device_configs': _to_jsonable(results.get('device_configs', {})),
             'config': asdict(config)
         }
         json.dump(results_json, f, indent=2)

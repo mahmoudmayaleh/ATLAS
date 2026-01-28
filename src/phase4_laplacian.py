@@ -302,7 +302,7 @@ class LaplacianAggregation:
                     layer: {key: val.clone() for key, val in weights.items()}
                     for layer, weights in model_k.items()
                 }
-                logger.warning(f"Client {client_id} has no neighbors, skipping Laplacian update")
+                logger.debug(f"Client {client_id} has no neighbors, skipping Laplacian update")
                 continue
             
             # Compute Laplacian term: Σ a_kℓ(W_k - W_ℓ)
@@ -332,10 +332,10 @@ class LaplacianAggregation:
                 
                 # If laplacian term has different shape (due to alignment), use original shape
                 if lap_A.shape != orig_A.shape:
-                    logger.warning(f"Shape mismatch for {layer_name} A: {lap_A.shape} vs {orig_A.shape}, using zeros")
+                    logger.debug(f"Shape mismatch for {layer_name} A: {lap_A.shape} vs {orig_A.shape}, using zeros")
                     lap_A = torch.zeros_like(orig_A)
                 if lap_B.shape != orig_B.shape:
-                    logger.warning(f"Shape mismatch for {layer_name} B: {lap_B.shape} vs {orig_B.shape}, using zeros")
+                    logger.debug(f"Shape mismatch for {layer_name} B: {lap_B.shape} vs {orig_B.shape}, using zeros")
                     lap_B = torch.zeros_like(orig_B)
                 
                 updated_model[layer_name] = {
@@ -409,7 +409,7 @@ class LaplacianAggregation:
                         B_k_aligned = model_k[layer_name]['B']
                         B_l_aligned = model_l[layer_name]['B']
                 except Exception as e:
-                    logger.warning(f"Failed to align ranks for layer {layer_name}: {e}")
+                    logger.debug(f"Failed to align ranks for layer {layer_name}: {e}")
                     continue
                 
                 # Compute weighted difference: I_layer * a_kℓ * (W_k - W_ℓ)
@@ -757,7 +757,7 @@ def compute_adjacency_weights(
                         sim = gradient_similarities[client_i, client_j]
                         weight = max(sim, 0.0)  # Clip negative similarities
                     else:
-                        logger.warning("similarity method requires gradient_similarities, falling back to uniform")
+                        logger.debug("similarity method requires gradient_similarities, falling back to uniform")
                         weight = 1.0
                 
                 elif method == 'adaptive':
@@ -777,7 +777,7 @@ def compute_adjacency_weights(
                         sim = max(gradient_similarities[client_i, client_j], 0.0)
                         weight = sim
                     else:
-                        logger.warning("adaptive method requires gradient_similarities, falling back to uniform")
+                        logger.debug("adaptive method requires gradient_similarities, falling back to uniform")
                         weight = 1.0
                 
                 else:
