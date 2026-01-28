@@ -123,8 +123,8 @@ class ATLASIntegratedTrainer:
         )
         self.device_profiler = DeviceProfiler()
         self.rank_allocator = RankAllocator(
-            rank_candidates=config.rank_candidates,
-            memory_safety_margin=0.1
+            model_dim=768,  # DistilBERT hidden size
+            bytes_per_param=4  # fp32
         )
         
         # Load model & tokenizer
