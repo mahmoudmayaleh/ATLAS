@@ -118,11 +118,8 @@ class ATLASIntegratedTrainer:
             layer_normalize=True
         )
         self.task_clusterer = TaskClusterer(
-            k_range=config.k_range,
-            silhouette_weight=0.5,
-            db_weight=0.3,
-            ch_weight=0.2,
-            temporal_stability=True
+            n_clusters_range=config.k_range,
+            min_cluster_size=2
         )
         self.device_profiler = DeviceProfiler()
         self.rank_allocator = RankAllocator(
