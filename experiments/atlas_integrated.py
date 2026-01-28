@@ -283,8 +283,9 @@ class ATLASIntegratedTrainer:
         print(f"PHASE 3 & 4: SPLIT FL + LAPLACIAN REGULARIZATION")
         print(f"{'='*70}\n")
         results = self._phase3_4_training(
-            cluster_labels, 
+            cluster_labels,
             device_configs,
+            fingerprints,
             start_round=start_round,
             checkpoint=checkpoint
         )
@@ -479,6 +480,7 @@ class ATLASIntegratedTrainer:
         self,
         cluster_labels: Dict[int, int],
         device_configs: Dict[int, Dict],
+        fingerprints: Dict[int, np.ndarray],
         start_round: int = 0,
         checkpoint: Optional[Dict] = None
     ) -> Dict:
