@@ -900,8 +900,8 @@ class ATLASIntegratedTrainer:
         print(f"    Client {client_id} ({task_name}): {num_batches} batches, loss={avg_loss:.4f}")
         return avg_loss
     
-    def _evaluate_client(self, model: nn.Module, test_dataset) -> Tuple[float, float]:
-        """Evaluate one client on test set"""
+    def _evaluate_client(self, model: nn.Module, test_dataset) -> Tuple[float, float, float]:
+        """Evaluate one client on test set. Returns (accuracy, avg_loss, f1)"""
         model.eval()
         dataloader = DataLoader(test_dataset, batch_size=self.config.batch_size * 2)
         
@@ -909,6 +909,8 @@ class ATLASIntegratedTrainer:
         total_samples = 0
         total_loss = 0.0
         num_batches = 0
+        all_preds = []
+        all_labels = []
         
         with torch.no_grad():
             for batch in dataloader:
@@ -925,11 +927,24 @@ class ATLASIntegratedTrainer:
                 total_samples += labels.size(0)
                 total_loss += loss.item()
                 num_batches += 1
+                # Accumulate for F1
+                all_preds.append(predictions.detach().cpu())
+                all_labels.append(labels.detach().cpu())
         
         accuracy = total_correct / max(total_samples, 1)
         avg_loss = total_loss / max(num_batches, 1)
-        
-        return accuracy, avg_loss
+        # Compute F1 score (macro) across collected predictions
+        try:
+            if all_preds and all_labels:
+                preds_cat = torch.cat(all_preds).numpy()
+                labels_cat = torch.cat(all_labels).numpy()
+                f1 = float(f1_score(labels_cat, preds_cat, average='macro', zero_division=0))
+            else:
+                f1 = 0.0
+        except Exception:
+            f1 = 0.0
+
+        return accuracy, avg_loss, f1
     
     def _fedavg_aggregate(self, weights_list: List[Dict[str, torch.Tensor]]) -> Dict[str, torch.Tensor]:
         """FedAvg aggregation"""
@@ -1040,17 +1055,18 @@ if __name__ == "__main__":
     
     parser = argparse.ArgumentParser(description="Run ATLAS integrated experiment")
     parser.add_argument("--mode", choices=["quick", "full"], default="quick")
+    parser.add_argument("--rounds", type=int, help="Override number of rounds (quick/full)")
     parser.add_argument("--resume", type=str, help="Resume from checkpoint")
     args = parser.parse_args()
     
     if args.mode == "quick":
         # Quick test: 3 tasks, 2 clients per task, 5 rounds
-        print("[MODE] Quick test (15-20 min on T4 GPU)")
+        print("[MODE] Quick test (10-15 min on T4 GPU)")
         config = ATLASConfig(
             model_name="distilbert-base-uncased",
             tasks=['sst2', 'mrpc'],  # 2 tasks for quick test
             clients_per_task=2,
-            num_rounds=5,
+            num_rounds=3,
             local_epochs=2,
             batch_size=16,
             max_samples_per_client=500,  # Small for speed
@@ -1073,6 +1089,10 @@ if __name__ == "__main__":
         )
     
     trainer = ATLASIntegratedTrainer(config)
+    # Allow CLI override of rounds
+    if args.rounds is not None:
+        trainer.config.num_rounds = int(args.rounds)
+
     results = trainer.run_full_pipeline(resume_from=args.resume)
     
     # Save final results
