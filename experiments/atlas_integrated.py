@@ -589,9 +589,10 @@ class ATLASIntegratedTrainer:
                 # FedAvg within cluster
                 avg_weights = self._fedavg_aggregate(cluster_weights)
                 
-                # Store for Phase 4
+                # Store for Phase 4 (convert flat state to LoRA-structured dict)
+                lora_struct = self._flat_state_to_lora(avg_weights)
                 for cid in client_ids:
-                    aggregated_models[cid] = avg_weights
+                    aggregated_models[cid] = lora_struct
             
             # Step 3: Laplacian regularization (personalization)
             print(f"\n[Round {round_idx+1}] Applying Laplacian regularization...")
@@ -859,6 +860,40 @@ class ATLASIntegratedTrainer:
                 aggregated[key] = weights_list[0][key]
         
         return aggregated
+
+    def _flat_state_to_lora(self, state: Dict[str, torch.Tensor]) -> Dict[str, Dict[str, torch.Tensor]]:
+        """
+        Convert a flat state_dict (from PEFT/transformers) into a LoRA-style mapping:
+        { 'layer_{i}': {'A': tensor, 'B': tensor}, ... }
+        """
+        import re
+        lora = {}
+        for key, val in state.items():
+            key_low = key.lower()
+            if 'lora_a' in key_low or 'lora_b' in key_low:
+                # Attempt to extract transformer layer index like '.h.<idx>.'
+                m = re.search(r"\.h\.(\d+)\.", key)
+                if m:
+                    layer_idx = int(m.group(1))
+                    layer_name = f'layer_{layer_idx}'
+                else:
+                    m2 = re.search(r'layer_(\d+)', key_low)
+                    if m2:
+                        layer_name = f"layer_{int(m2.group(1))}"
+                    else:
+                        # Fallback: use module prefix before '.lora_'
+                        parts = key.split('.lora_')
+                        layer_name = parts[0] if parts else key_low
+
+                if layer_name not in lora:
+                    lora[layer_name] = {}
+
+                if 'lora_a' in key_low:
+                    lora[layer_name]['A'] = val.clone().cpu()
+                elif 'lora_b' in key_low:
+                    lora[layer_name]['B'] = val.clone().cpu()
+
+        return lora
     
     def _save_checkpoint(self, round_num: int, state: Dict):
         """Save checkpoint for resume"""
