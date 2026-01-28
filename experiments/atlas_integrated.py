@@ -113,8 +113,9 @@ class ATLASIntegratedTrainer:
         
         # Initialize ATLAS components
         self.gradient_extractor = GradientExtractor(
-            fingerprint_dim=config.fingerprint_dim,
-            normalize_layers=True
+            dim=config.fingerprint_dim,
+            device=self.device,
+            layer_normalize=True
         )
         self.task_clusterer = TaskClusterer(
             k_range=config.k_range,
