@@ -647,13 +647,30 @@ class ATLASIntegratedTrainer:
         
         return results
     
-    def _apply_heterogeneous_lora(self, model: nn.Module, lora_ranks: Dict[str, int]) -> nn.Module:
+    def _apply_heterogeneous_lora(self, model: nn.Module, lora_ranks) -> nn.Module:
         """Apply LoRA with heterogeneous ranks per layer"""
         from peft import get_peft_model, LoraConfig, TaskType
         
         # Get unique rank (simplified - use max rank for now)
         # In full implementation, would apply different ranks per layer
-        rank = max(lora_ranks.values()) if lora_ranks else 8
+        rank = 8
+        if lora_ranks:
+            if isinstance(lora_ranks, dict):
+                try:
+                    rank = max(lora_ranks.values())
+                except Exception:
+                    rank = 8
+            elif isinstance(lora_ranks, (list, tuple, np.ndarray)):
+                try:
+                    rank = int(max(lora_ranks))
+                except Exception:
+                    rank = 8
+            else:
+                # Fallback if unexpected type
+                try:
+                    rank = int(lora_ranks)
+                except Exception:
+                    rank = 8
         
         # Detect target modules
         target_modules = []
