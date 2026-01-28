@@ -419,24 +419,33 @@ class RankAllocator:
         layer_importance.sort(key=lambda x: x[1], reverse=True)
         
         # Initialize ranks to minimum
-        ranks = [self.rank_candidates[0]] * n_layers
+        min_rank = self.rank_candidates[0]
+        ranks = [min_rank] * n_layers
+        
+        # Account for initial minimum rank allocation memory
+        current_memory = sum(
+            self.compute_rank_memory(min_rank) 
+            for layer_idx in layers_to_allocate
+        )
         
         # Greedy allocation: iterate by importance, assign highest feasible rank
-        current_memory = 0.0
-        
         for layer_idx, importance in layer_importance:
             # Try ranks in descending order
             for rank in reversed(self.rank_candidates):
-                # Compute marginal memory cost
+                if rank <= ranks[layer_idx]:
+                    # Already at or above this rank
+                    continue
+                
+                # Compute marginal memory cost (upgrade from current to new rank)
                 old_rank_memory = self.compute_rank_memory(ranks[layer_idx])
                 new_rank_memory = self.compute_rank_memory(rank)
                 marginal_memory = new_rank_memory - old_rank_memory
                 
-                # Check if it fits in budget
+                # Check if upgrade fits in budget
                 if current_memory + marginal_memory <= C_mem:
                     ranks[layer_idx] = rank
                     current_memory += marginal_memory
-                    break  # Assigned highest feasible rank
+                    break  # Assigned highest feasible rank for this layer
         
         return ranks
     
