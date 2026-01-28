@@ -427,9 +427,10 @@ class TaskClusterer:
             k_range = [self.fixed_k]
         else:
             min_k = max(self.n_clusters_range[0], 2)
-            max_k = min(self.n_clusters_range[1], fingerprints.shape[0])
+            # Ensure we never try k == n_samples (silhouette invalid) by capping at n_samples-1
+            max_k = min(self.n_clusters_range[1], max(2, fingerprints.shape[0] - 1))
             k_range = range(min_k, max_k + 1)
-        
+
         if fingerprints.shape[0] < min(k_range):
             raise ValueError(
                 f"Need at least {min(k_range)} samples, got {fingerprints.shape[0]}"
