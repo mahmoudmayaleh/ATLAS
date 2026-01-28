@@ -385,6 +385,7 @@ class RankAllocator:
         Uses greedy importance-based allocation:
         1. Sort layers by importance (descending)
         2. For each layer, assign highest rank that keeps sum ≤ C_mem
+        3. Respects device suggested_ranks as capability ceiling
         
         Args:
             device_profile: Device profile from DeviceProfiler
@@ -397,6 +398,9 @@ class RankAllocator:
         """
         # Compute adapter memory budget
         C_mem = self.compute_adapter_memory_budget(device_profile['memory_mb'])
+        
+        # Get device capability ceiling (max suggested rank)
+        max_device_rank = max(device_profile.get('suggested_ranks', [64]))
         
         # Determine which layers to allocate (client-side only if split_point given)
         if split_point is not None:
@@ -430,8 +434,9 @@ class RankAllocator:
         
         # Greedy allocation: iterate by importance, assign highest feasible rank
         for layer_idx, importance in layer_importance:
-            # Try ranks in descending order
-            for rank in reversed(self.rank_candidates):
+            # Try ranks in descending order (capped by device capability)
+            feasible_ranks = [r for r in self.rank_candidates if r <= max_device_rank]
+            for rank in reversed(feasible_ranks):
                 if rank <= ranks[layer_idx]:
                     # Already at or above this rank
                     continue
