@@ -559,6 +559,21 @@ class ATLASIntegratedTrainer:
                 if sim[i, j] > 0:
                     adj[i, j] = float(sim[i, j])
 
+        # If adjacency is all zeros (no positive similarities), fall back to uniform intra-cluster weights
+        if np.sum(adj) == 0:
+            print("[Phase 3] No positive similarities found for adjacency; using uniform intra-cluster weights")
+            adj = np.zeros_like(sim)
+            for group_id, clients in task_clusters.items():
+                m = len(clients)
+                if m > 1:
+                    w = 1.0 / (m - 1)
+                    for a in range(m):
+                        for b in range(m):
+                            if a != b:
+                                i = all_clients.index(clients[a])
+                                j = all_clients.index(clients[b])
+                                adj[i, j] = w
+
         task_graph = TaskGraph.from_task_clusters(
             task_clusters=task_clusters,
             adjacency_weights=adj,
