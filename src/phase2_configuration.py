@@ -10,6 +10,8 @@ import torch.nn.functional as F
 import numpy as np
 from typing import Dict, List, Optional, Tuple
 import warnings
+import logging
+logger = logging.getLogger(__name__)
 
 
 class DeviceProfiler:
@@ -77,9 +79,8 @@ class DeviceProfiler:
             Dict with memory_mb, compute_ratio, suggested_ranks
         """
         if device_type not in self.PROFILES:
-            warnings.warn(
-                f"Unknown device type '{device_type}'. Using 'cpu' profile."
-            )
+            # Downgrade unknown device-type message to debug to avoid noisy warnings
+            logger.debug(f"Unknown device type '{device_type}'. Using 'cpu' profile.")
             device_type = 'cpu'
         
         return self.PROFILES[device_type].copy()

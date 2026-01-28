@@ -2,11 +2,6 @@
 
 <div align="center">
 
-![Python](https://img.shields.io/badge/python-3.9+-blue.svg)
-![PyTorch](https://img.shields.io/badge/PyTorch-2.0+-ee4c2c.svg)
-![License](https://img.shields.io/badge/license-MIT-green.svg)
-![Status](https://img.shields.io/badge/status-active-success.svg)
-
 **Privacy-Preserving Federated Learning with Heterogeneous LoRA and Split Learning**
 
 [Quick Start](#-quick-start) • [Documentation](#-documentation) • [Results](#-results) • [Paper](#-paper-references)
@@ -21,10 +16,10 @@ ATLAS is a comprehensive federated learning framework that combines four state-o
 
 ### Key Components
 
-1. **🎨 MIRA Task Clustering** - Automatic task-aware client grouping using gradient fingerprints
-2. **⚙️ HSplitLoRA** - Heterogeneous LoRA rank allocation based on device capabilities
-3. **🔀 SplitLoRA** - Split learning for 10-100× communication reduction
-4. **📊 Laplacian Regularization** - Graph-based personalization with task similarity
+1. **MIRA Task Clustering** - Automatic task-aware client grouping using gradient fingerprints
+2. **HSplitLoRA** - Heterogeneous LoRA rank allocation based on device capabilities
+3. **SplitLoRA** - Split learning for 10-100× communication reduction
+4. **Laplacian Regularization** - Graph-based personalization with task similarity
 
 ### Key Features
 

@@ -13,6 +13,9 @@ from scipy.optimize import linear_sum_assignment
 from typing import Dict, List, Tuple, Optional, Union
 import warnings
 
+# Suppress noisy PCA resizing warnings from sklearn when samples < n_components
+warnings.filterwarnings('ignore', message='Reducing n_components', category=UserWarning)
+
 
 class GradientExtractor:
     """

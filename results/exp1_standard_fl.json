@@ -1,0 +1,59 @@
+{
+  "experiment_name": "standard_fl_sst2",
+  "model_name": "distilbert-base-uncased",
+  "task_name": "sst2",
+  "num_rounds": 5,
+  "num_clients": 5,
+  "use_lora": false,
+  "lora_rank": null,
+  "total_time_minutes": 27.208967300256095,
+  "final_accuracy": 0.893348623853211,
+  "final_loss": 0.45392560799207005,
+  "round_results": [
+    {
+      "round": 1,
+      "accuracy": 0.8738532110091743,
+      "loss": 0.3549017988677536,
+      "train_loss": 0.25165289760231974,
+      "time_seconds": 322.29507517814636,
+      "memory_mb": 2942.1240234375,
+      "communication_mb": 1277.0654678344727
+    },
+    {
+      "round": 2,
+      "accuracy": 0.8864678899082569,
+      "loss": 0.3886218776128122,
+      "train_loss": 0.11158167139453193,
+      "time_seconds": 321.405974149704,
+      "memory_mb": 3194.99267578125,
+      "communication_mb": 1277.0654678344727
+    },
+    {
+      "round": 3,
+      "accuracy": 0.8807339449541285,
+      "loss": 0.46074472021843704,
+      "train_loss": 0.07029977947982649,
+      "time_seconds": 321.5621371269226,
+      "memory_mb": 3198.99267578125,
+      "communication_mb": 1277.0654678344727
+    },
+    {
+      "round": 4,
+      "accuracy": 0.8922018348623854,
+      "loss": 0.43513545526989866,
+      "train_loss": 0.050199390651596086,
+      "time_seconds": 321.6705803871155,
+      "memory_mb": 3195.86767578125,
+      "communication_mb": 1277.0654678344727
+    },
+    {
+      "round": 5,
+      "accuracy": 0.893348623853211,
+      "loss": 0.45392560799207005,
+      "train_loss": 0.03387896382349233,
+      "time_seconds": 321.78025484085083,
+      "memory_mb": 3199.99267578125,
+      "communication_mb": 1277.0654678344727
+    }
+  ]
+}
