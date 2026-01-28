@@ -62,6 +62,28 @@ class DeviceProfiler:
             'compute_ratio': 15.0,
             'suggested_ranks': [32, 64, 128]
         }
+            ,
+            # Explicit device profiles used by experiments
+            'cpu_2gb': {
+                'memory_mb': 2048,
+                'compute_ratio': 1.0,
+                'suggested_ranks': [4, 8]
+            },
+            'tablet_4gb': {
+                'memory_mb': 4096,
+                'compute_ratio': 1.5,
+                'suggested_ranks': [8, 16]
+            },
+            'laptop_8gb': {
+                'memory_mb': 8192,
+                'compute_ratio': 4.0,
+                'suggested_ranks': [16, 32]
+            },
+            'gpu_16gb': {
+                'memory_mb': 16384,
+                'compute_ratio': 12.0,
+                'suggested_ranks': [32, 64]
+            }
     }
     
     def __init__(self):
