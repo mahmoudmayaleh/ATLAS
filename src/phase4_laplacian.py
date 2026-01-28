@@ -184,6 +184,18 @@ class TaskGraph:
                     for j_idx, j in enumerate(all_clients):
                         if i != j and adjacency_weights[i_idx, j_idx] > 0:
                             graph.add_edge(i, j, float(adjacency_weights[i_idx, j_idx]))
+                # Rebuild neighbors and if no neighbors found, fall back to uniform intra-cluster weights
+                graph._rebuild_neighbors()
+                if not graph.neighbors:
+                    logger.debug("Adjacency matrix produced no edges; falling back to uniform intra-cluster weights")
+                    for group_id, client_ids in task_clusters.items():
+                        n_clients = len(client_ids)
+                        if n_clients > 1:
+                            uniform_weight = 1.0 / (n_clients - 1)
+                            for i in client_ids:
+                                for j in client_ids:
+                                    if i != j:
+                                        graph.add_edge(i, j, uniform_weight)
             else:
                 # Use provided weights dict directly
                 for (i, j), weight in adjacency_weights.items():
