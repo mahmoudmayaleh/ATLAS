@@ -350,10 +350,21 @@ class ATLASIntegratedTrainer:
 
         # Cluster based on fingerprints
         print(f"\n[Phase 1] Clustering {len(fingerprints)} clients...")
-        cluster_labels, metrics = self.task_clusterer.cluster(
-            fingerprints,
-            return_metrics=True
-        )
+        # Convert dict -> array (preserve client order)
+        client_ids = list(fingerprints.keys())
+        fps = np.vstack([fingerprints[cid] for cid in client_ids])
+
+        res = self.task_clusterer.cluster(fps, verbose=True)
+        metrics = res.get('metrics', {})
+        labels = res.get('labels')
+
+        # Map labels back to client ids
+        cluster_labels = {cid: int(lbl) for cid, lbl in zip(client_ids, labels)}
+
+        print(f"  ✓ Found {res.get('n_clusters', len(set(labels)))} task groups")
+        for cluster_id in sorted(set(labels)):
+            clients_in_cluster = [cid for cid, label in cluster_labels.items() if label == cluster_id]
+            print(f"    - Group {cluster_id}: {len(clients_in_cluster)} clients")
         
         print(f"  ✓ Found {len(set(cluster_labels.values()))} task groups")
         for cluster_id in set(cluster_labels.values()):
