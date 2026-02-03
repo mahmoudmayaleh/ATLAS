@@ -100,7 +100,7 @@ class ATLASConfig:
     rank_candidates: List[int] = None  # [4, 8, 16, 32, 64] - greedy importance-aware
     alpha_base: float = 0.5  # Base model takes 50% memory
     alpha_act: float = 0.25  # Activations take 25%
-    alpha_opt: float = 0.15  # Optimizer takes 15%
+    alpha_opt: float = 0.08  # Optimizer takes 8% (reduced from 0.15 to force per-layer variation)
     use_importance_allocation: bool = True  # Use per-layer importance scores
     
     # Phase 3: Split learning
