@@ -1345,4 +1345,10 @@ if __name__ == "__main__":
             'fingerprints': _to_jsonable(results.get('fingerprints', {})),
             'clustering_metrics': _to_jsonable(results.get('clustering_metrics', {})),
             'device_configs': _to_jsonable(results.get('device_configs', {})),
-                'layer_importances': _to_jsonable(results.get('layer_importances', {})),
+            'layer_importances': _to_jsonable(results.get('layer_importances', {})),
+            'config': asdict(config)
+        }
+        json.dump(results_json, f, indent=2)
+    
+    print(f"\n[SAVED] Results saved to {results_path}")
+    print("\n[DONE] ATLAS integrated experiment complete!")
