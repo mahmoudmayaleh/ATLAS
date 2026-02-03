@@ -371,7 +371,18 @@ class ATLASIntegratedTrainer:
             del model
             torch.cuda.empty_cache() if torch.cuda.is_available() else None
 
-            print(f"✓ raw grad shape: {raw_grad.shape}")
+            # raw_grad may be a dict (layer-wise tensors) or a tensor/ndarray.
+            if isinstance(raw_grad, dict):
+                total_params = sum(g.numel() for g in raw_grad.values() if hasattr(g, 'numel'))
+                print(f"✓ raw grad dict: {len(raw_grad)} tensors, total_params={total_params}")
+            else:
+                shape = getattr(raw_grad, 'shape', None)
+                if shape is None:
+                    try:
+                        shape = np.asarray(raw_grad).shape
+                    except Exception:
+                        shape = 'unknown'
+                print(f"✓ raw grad shape: {shape}")
         
         # Fit PCA on collected raw gradients and compute fingerprints
         print(f"\n[Phase 1] Fitting fingerprint PCA on {len(raw_gradients)} samples...")
