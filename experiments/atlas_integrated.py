@@ -1131,7 +1131,7 @@ if __name__ == "__main__":
     
     parser = argparse.ArgumentParser(description="Run ATLAS integrated experiment")
     parser.add_argument("--mode", choices=["quick", "full"], default="quick")
-    parser.add_argument("--rounds", type=int, help="Override number of rounds (quick/full)")
+    parser.add_argument("-r", "--rounds", type=int, help="Override number of rounds (quick/full)")
     parser.add_argument("--resume", type=str, help="Resume from checkpoint")
     args = parser.parse_args()
     
