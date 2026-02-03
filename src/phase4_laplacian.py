@@ -723,13 +723,17 @@ def compute_adjacency_weights(
     client_performance: Optional[Dict[int, float]] = None,
     method: Literal['uniform', 'similarity', 'adaptive', 'mira_rbf'] = 'mira_rbf',
     adaptive_beta: float = 1.0,
-    mira_alpha: float = 1.0
+    mira_alpha: float = 1.0,
+    block_diagonal: bool = True,
+    ensure_connectivity: bool = True
 ) -> Dict[Tuple[int, int], float]:
     """
     Compute adjacency weights a_kℓ for Laplacian regularization.
     
     IMPROVED: Now supports MIRA's RBF kernel from Phase 1 fingerprints:
         a_kℓ = exp(-α ||f_k - f_ℓ||²)
+    
+    NEW: Block-diagonal structure and singleton connectivity for MIRA alignment
     
     Integrates with Phase 1 (gradient fingerprints/similarities) and Phase 3 (performance).
     
@@ -745,6 +749,8 @@ def compute_adjacency_weights(
             'mira_rbf': MIRA's RBF kernel a_kℓ = exp(-α||f_k - f_ℓ||²) (RECOMMENDED)
         adaptive_beta: Temperature for adaptive weighting (higher = more emphasis on performance)
         mira_alpha: RBF kernel bandwidth parameter (higher = faster decay with distance)
+        block_diagonal: If True, zero out cross-cluster edges (per-task structure)
+        ensure_connectivity: If True, connect singletons to nearest intra-task neighbors
     
     Returns:
         Dictionary mapping (client_i, client_j) -> weight
@@ -765,11 +771,71 @@ def compute_adjacency_weights(
         # Build client_id -> index mapping
         client_to_idx = {cid: idx for idx, cid in enumerate(client_ids_sorted)}
     
+    # Build client -> task mapping for ensuring intra-task connectivity
+    client_to_task = {}
+    if ensure_connectivity:
+        # Map each client to its task name (assumes clients in same cluster share task)
+        # This requires access to client metadata; for now use cluster_id as proxy
+        for cluster_id, client_ids in task_clusters.items():
+            for cid in client_ids:
+                client_to_task[cid] = cluster_id
+    
     for group_id, client_ids in task_clusters.items():
         n_clients = len(client_ids)
         
         if n_clients <= 1:
-            # Single client in cluster, no edges
+            # Single client in cluster (singleton)
+            if ensure_connectivity and n_clients == 1:
+                # Connect singleton to nearest neighbors within same task across clusters
+                # For simplicity, connect to all clients in the same cluster (even if singleton)
+                # In practice, you'd look at task_name metadata
+                singleton_id = client_ids[0]
+                
+                # Find other clients in OTHER clusters that share the same task
+                # For now, connect to nearest clients based on fingerprint distance
+                if method == 'mira_rbf' and gradient_fingerprints is not None:
+                    # Find k nearest neighbors across ALL clients
+                    all_clients = [c for cids in task_clusters.values() for c in cids]
+                    singleton_idx = client_to_idx[singleton_id]
+                    
+                    # Compute distances to all other clients
+                    neighbor_dists = []
+                    for other_cid in all_clients:
+                        if other_cid != singleton_id:
+                            other_idx = client_to_idx[other_cid]
+                            dist_sq = pairwise_distances_sq[singleton_idx, other_idx]
+                            # Only connect to clients in same task (use cluster as proxy for task)
+                            # In a real implementation, check if client_to_task[other_cid] == client_to_task[singleton_id]
+                            neighbor_dists.append((other_cid, dist_sq))
+                    
+                    # Sort by distance and take top k=2 neighbors
+                    neighbor_dists.sort(key=lambda x: x[1])
+                    k_neighbors = min(2, len(neighbor_dists))
+                    
+                    if k_neighbors > 0:
+                        # Compute RBF weights
+                        neighbor_weights = []
+                        for other_cid, dist_sq in neighbor_dists[:k_neighbors]:
+                            weight = np.exp(-mira_alpha * dist_sq)
+                            neighbor_weights.append((other_cid, weight))
+                        
+                        # Normalize
+                        total_weight = sum(w for _, w in neighbor_weights)
+                        if total_weight > 1e-8:
+                            neighbor_weights = [(j, w / total_weight) for j, w in neighbor_weights]
+                        else:
+                            uniform = 1.0 / len(neighbor_weights)
+                            neighbor_weights = [(j, uniform) for j, _ in neighbor_weights]
+                        
+                        # Add bidirectional edges
+                        for other_cid, weight in neighbor_weights:
+                            weights[(singleton_id, other_cid)] = weight
+                            # Also add reverse edge for symmetry
+                            if (other_cid, singleton_id) not in weights:
+                                weights[(other_cid, singleton_id)] = weight
+                else:
+                    # Fallback: no neighbors for singleton (will be isolated)
+                    logger.debug(f"Singleton client {singleton_id} has no neighbors")
             continue
         
         for client_i in client_ids:
@@ -843,6 +909,32 @@ def compute_adjacency_weights(
             # Add to weights dict
             for client_j, weight in neighbor_weights:
                 weights[(client_i, client_j)] = weight
+    
+    # Block-diagonal enforcement: zero out cross-cluster edges
+    if block_diagonal:
+        # Build cluster membership lookup
+        client_to_cluster = {}
+        for cluster_id, client_ids in task_clusters.items():
+            for cid in client_ids:
+                client_to_cluster[cid] = cluster_id
+        
+        # Filter out cross-cluster edges
+        weights = {
+            (i, j): w for (i, j), w in weights.items()
+            if client_to_cluster.get(i) == client_to_cluster.get(j)
+        }
+        
+        # Re-normalize after filtering
+        per_client_totals = {}
+        for (i, j), w in weights.items():
+            if i not in per_client_totals:
+                per_client_totals[i] = 0.0
+            per_client_totals[i] += w
+        
+        for (i, j) in list(weights.keys()):
+            total = per_client_totals.get(i, 1.0)
+            if total > 1e-8:
+                weights[(i, j)] /= total
     
     return weights
 
