@@ -78,11 +78,11 @@ class ATLASConfig:
     # Model & tasks
     model_name: str = "distilbert-base-uncased"
     tasks: List[str] = None  # e.g., ['sst2', 'mrpc', 'cola']
-    clients_per_task: int = 3
+    clients_per_task: int = 3  # 3 clients per task → 9 clients total for 3 tasks
     
     # Training
-    num_rounds: int = 10
-    local_epochs: int = 3
+    num_rounds: int = 20  # Increased to 20-30 for MIRA convergence
+    local_epochs: int = 2  # Keep moderate (1-2 epochs per round)
     batch_size: int = 16
     max_samples_per_client: int = 2000
     learning_rate: float = 2e-5
@@ -91,37 +91,48 @@ class ATLASConfig:
     device_types: List[str] = None  # e.g., ['cpu_2gb', 'tablet_4gb', 'laptop_8gb', 'gpu_16gb']
     
     # Phase 1: Clustering
-    fingerprint_epochs: int = 2  # Epochs for gradient extraction
-    fingerprint_dim: int = 64
+    fingerprint_epochs: int = 2  # Epochs for gradient extraction (2-3 passes)
+    fingerprint_batches: int = 64  # Forward-backward passes per client
+    fingerprint_dim: int = 64  # Target PCA dimension
     k_range: Tuple[int, int] = (2, 5)  # Try k=2,3,4,5 clusters
     
     # Phase 2: LoRA ranks
-    rank_candidates: List[int] = None  # [4, 8, 16, 32]
+    rank_candidates: List[int] = None  # [4, 8, 16, 32, 64] - greedy importance-aware
     alpha_base: float = 0.5  # Base model takes 50% memory
     alpha_act: float = 0.25  # Activations take 25%
     alpha_opt: float = 0.15  # Optimizer takes 15%
+    use_importance_allocation: bool = True  # Use per-layer importance scores
     
     # Phase 3: Split learning
     split_layer: int = 3  # Split at layer 3 (bottom half)
     
     # Phase 4: Laplacian regularization (MIRA)
-    eta: float = 0.1  # Regularization strength λ (tune: {0.01, 0.1, 0.5})
+    eta: float = 0.1  # Regularization strength λ (tune: {0.0, 0.01, 0.1, 0.5, 1.0})
     laplacian_adjacency_method: str = 'mira_rbf'  # 'uniform', 'similarity', 'mira_rbf' (RECOMMENDED)
     mira_alpha: float = 1.0  # RBF kernel bandwidth for a_kℓ = exp(-α||f_k - f_ℓ||²)
     k_neighbors: int = 3
+    block_diagonal: bool = True  # Zero cross-cluster edges for block structure
+    ensure_connectivity: bool = True  # Ensure singletons have intra-task neighbors
+    
+    # Ablation & tuning modes
+    mode: str = 'atlas'  # 'local_only', 'fedavg_cluster', 'atlas'
+    lambda_sweep: bool = False  # If True, sweep eta over [0.0, 0.01, 0.1, 0.5, 1.0]
+    lambda_values: List[float] = None  # For lambda sweep
     
     # Checkpointing
     checkpoint_dir: str = "./checkpoints"
-    save_every: int = 1  # Save every N rounds (1 = every round)
+    save_every: int = 5  # Save every N rounds (less frequent for longer runs)
     
     def __post_init__(self):
         if self.tasks is None:
-            self.tasks = ['sst2', 'mrpc', 'cola']
+            self.tasks = ['sst2', 'mrpc', 'cola']  # Default: 3 tasks
         if self.device_types is None:
-            # Mix of devices: 2 low-end, 3 mid, 2 high, 1 very high
-            self.device_types = ['cpu_2gb'] * 2 + ['tablet_4gb'] * 3 + ['laptop_8gb'] * 2 + ['gpu_16gb'] * 1
+            # Mix of devices: 2 low-end, 3 mid, 2 high, 2 very high
+            self.device_types = ['cpu_2gb'] * 2 + ['tablet_4gb'] * 3 + ['laptop_8gb'] * 2 + ['gpu_16gb'] * 2
         if self.rank_candidates is None:
-            self.rank_candidates = [4, 8, 16, 32]
+            self.rank_candidates = [4, 8, 16, 32, 64]  # Include 64 for large devices
+        if self.lambda_values is None:
+            self.lambda_values = [0.0, 0.01, 0.1, 0.5, 1.0]  # Lambda sweep grid
 
 
 @dataclass
@@ -297,11 +308,12 @@ class ATLASIntegratedTrainer:
             print(f"\n{'='*70}")
             print(f"PHASE 1: TASK CLUSTERING")
             print(f"{'='*70}\n")
-            cluster_labels, fingerprints, clustering_metrics = self._phase1_clustering()
+            cluster_labels, fingerprints, clustering_metrics, layer_importances = self._phase1_clustering()
         else:
             cluster_labels = checkpoint['cluster_labels']
             fingerprints = checkpoint['fingerprints']
             clustering_metrics = checkpoint.get('clustering_metrics', {})
+            layer_importances = checkpoint.get('layer_importances', {})
             print(f"[RESUME] Loaded clustering from checkpoint")
         
         # ========== PHASE 2: HETEROGENEOUS RANK ALLOCATION ==========
@@ -309,7 +321,7 @@ class ATLASIntegratedTrainer:
             print(f"\n{'='*70}")
             print(f"PHASE 2: HETEROGENEOUS RANK ALLOCATION")
             print(f"{'='*70}\n")
-            device_configs = self._phase2_rank_allocation(cluster_labels, fingerprints)
+            device_configs = self._phase2_rank_allocation(cluster_labels, fingerprints, layer_importances)
         else:
             device_configs = checkpoint['device_configs']
             print(f"[RESUME] Loaded rank configs from checkpoint")
@@ -331,6 +343,7 @@ class ATLASIntegratedTrainer:
         results['fingerprints'] = fingerprints
         results['clustering_metrics'] = clustering_metrics
         results['device_configs'] = device_configs
+        results['layer_importances'] = layer_importances
         
         total_time = time.time() - start_time
         
@@ -351,6 +364,7 @@ class ATLASIntegratedTrainer:
         
         # Create temporary models for fingerprinting
         raw_gradients = {}
+        layer_importances = {}  # Store per-client layer importance
 
         for client_data in self.clients_data:
             print(f"  Client {client_data.client_id} ({client_data.task_name})...", end=" ")
@@ -364,9 +378,10 @@ class ATLASIntegratedTrainer:
                     num_labels=num_labels
                 ).to(self.device)
 
-            # Extract raw gradient vector (tensor)
-            raw_grad = self._extract_fingerprint(model, client_data.train_dataset)
+            # Extract raw gradient vector and layer importance
+            raw_grad, layer_imp = self._extract_fingerprint(model, client_data.train_dataset)
             raw_gradients[client_data.client_id] = raw_grad
+            layer_importances[client_data.client_id] = layer_imp
 
             del model
             torch.cuda.empty_cache() if torch.cuda.is_available() else None
@@ -454,20 +469,26 @@ class ATLASIntegratedTrainer:
         
         clustering_metrics = metrics if metrics is not None else {}
 
-        return cluster_labels, fingerprints, clustering_metrics
+        return cluster_labels, fingerprints, clustering_metrics, layer_importances
     
-    def _extract_fingerprint(self, model: nn.Module, dataset: Subset) -> np.ndarray:
-        """Extract gradient fingerprint from a client's local training"""
+    def _extract_fingerprint(self, model: nn.Module, dataset: Subset) -> Tuple[Dict, Dict]:
+        """Extract gradient fingerprint from a client's local training.
+        
+        Returns:
+            (averaged_grads, layer_importance): gradient dict and per-layer importance scores
+        """
         dataloader = DataLoader(dataset, batch_size=self.config.batch_size, shuffle=True)
         optimizer = torch.optim.AdamW(model.parameters(), lr=self.config.learning_rate)
         
         model.train()
         grad_history = []
+        layer_norms = {}  # Track per-layer gradient norms for importance
         
-        # Train for fingerprint_epochs to collect gradients (increased from 10 to 64 samples)
+        # Train for fingerprint_epochs to collect gradients (2-3 passes)
+        batch_limit = self.config.fingerprint_batches  # Use config value
         for epoch in range(self.config.fingerprint_epochs):
             for batch_idx, batch in enumerate(dataloader):
-                if batch_idx >= 64:  # Increased from 10 to 64 for better signal
+                if batch_idx >= batch_limit:
                     break
                 
                 input_ids = batch['input_ids'].to(self.device)
@@ -493,7 +514,25 @@ class ATLASIntegratedTrainer:
                             'classifier' in name or 'pooler' in name                         # Final layers
                         ])
                         if is_last_two:
-                            grads_dict[name] = param.grad.detach().clone()
+                            grad_tensor = param.grad.detach().clone()
+                            grads_dict[name] = grad_tensor
+                            
+                            # Compute layer-level importance (squared gradient norm)
+                            # Infer layer index from parameter name
+                            import re
+                            layer_match = re.search(r'layer[._](\d+)', name)
+                            if layer_match:
+                                layer_idx = int(layer_match.group(1))
+                                layer_key = f'layer_{layer_idx}'
+                            elif 'classifier' in name or 'pooler' in name:
+                                layer_key = 'classifier'
+                            else:
+                                layer_key = 'other'
+                            
+                            grad_norm_sq = (grad_tensor ** 2).sum().item()
+                            if layer_key not in layer_norms:
+                                layer_norms[layer_key] = []
+                            layer_norms[layer_key].append(grad_norm_sq)
                 
                 if grads_dict:
                     # Pass as dict for layer-wise normalization in GradientExtractor
@@ -514,24 +553,30 @@ class ATLASIntegratedTrainer:
             for name in averaged_grads:
                 averaged_grads[name] = torch.mean(torch.stack(averaged_grads[name]), dim=0)
             
-            # Return gradient dict for proper layer-wise normalization
-            return averaged_grads
+            # Compute average importance per layer
+            layer_importance = {}
+            for layer_key, norms in layer_norms.items():
+                layer_importance[layer_key] = float(np.mean(norms))
+            
+            # Return gradient dict and importance scores
+            return averaged_grads, layer_importance
         else:
             # Fallback: random raw gradient dict
-            return {'fallback': torch.from_numpy(np.random.randn(self.config.fingerprint_dim)).float()}
+            return {'fallback': torch.from_numpy(np.random.randn(self.config.fingerprint_dim)).float()}, {}
     
     def _phase2_rank_allocation(
         self, 
         cluster_labels: Dict[int, int],
-        fingerprints: Dict[int, np.ndarray]
+        fingerprints: Dict[int, np.ndarray],
+        layer_importances: Dict[int, Dict[str, float]]
     ) -> Dict[int, Dict]:
         """
         Phase 2: Allocate heterogeneous LoRA ranks based on device + cluster complexity.
         
-        Improved allocation logic:
+        Improved allocation logic (MIRA-aligned):
         1. Compute cluster-level statistics (variance, difficulty)
-        2. Use per-layer importance based on gradient norms
-        3. Allocate higher ranks to more difficult/diverse clusters
+        2. Use ACTUAL per-layer importance from gradient norms collected during fingerprinting
+        3. Greedy allocation: sort layers by importance, try ranks {4,8,16,32,64}, pick largest under budget
         
         Returns: device_configs[client_id] = {device_profile, lora_ranks, cluster_stats}
         """
@@ -573,22 +618,43 @@ class ATLASIntegratedTrainer:
         for client_data in self.clients_data:
             device_type = client_data.device_type
             cluster_id = client_data.cluster_id
+            client_id = client_data.client_id
             
             # Get device profile
             device_profile = self.device_profiler.profile_device(device_type)
             
-            # Compute per-layer importance scores
-            # Strategy: higher-indexed layers (closer to output) + cluster complexity
+            # Compute per-layer importance scores from ACTUAL gradient norms
             cluster_complexity = cluster_stats.get(cluster_id, {}).get('normalized_complexity', 1.0)
             
-            # Base importance: gradient through later layers (common heuristic)
-            # Scale by cluster complexity: difficult clusters get more capacity
-            importance_scores = {}
-            for i in range(6):  # DistilBERT has 6 transformer layers
-                # Layer importance increases with depth (0.5 to 1.5)
-                layer_importance = 0.5 + (i / 6.0)
+            if self.config.use_importance_allocation and client_id in layer_importances:
+                # Use actual per-layer gradient norms from fingerprinting
+                raw_importance = layer_importances[client_id]
+                importance_scores = {}
+                
+                # Map layer names to layer indices
+                for i in range(6):  # DistilBERT has 6 transformer layers
+                    layer_key = f'layer_{i}'
+                    if layer_key in raw_importance:
+                        importance_scores[layer_key] = raw_importance[layer_key]
+                    else:
+                        # Fallback: heuristic (later layers more important)
+                        importance_scores[layer_key] = 0.5 + (i / 6.0)
+                
+                # Add classifier importance
+                if 'classifier' in raw_importance:
+                    importance_scores['classifier'] = raw_importance['classifier']
+                
                 # Scale by cluster difficulty
-                importance_scores[f'layer_{i}'] = layer_importance * (0.5 + 0.5 * cluster_complexity)
+                for key in importance_scores:
+                    importance_scores[key] *= (0.5 + 0.5 * cluster_complexity)
+            else:
+                # Fallback: heuristic importance
+                importance_scores = {}
+                for i in range(6):  # DistilBERT has 6 transformer layers
+                    # Layer importance increases with depth (0.5 to 1.5)
+                    layer_importance = 0.5 + (i / 6.0)
+                    # Scale by cluster difficulty
+                    importance_scores[f'layer_{i}'] = layer_importance * (0.5 + 0.5 * cluster_complexity)
             
             # Normalize importance scores to sum to 1.0
             total_importance = sum(importance_scores.values())
@@ -654,7 +720,9 @@ class ATLASIntegratedTrainer:
             task_clusters=task_clusters,
             gradient_fingerprints=fingerprints,  # Use Phase 1 fingerprints (dict)
             method=self.config.laplacian_adjacency_method,  # 'mira_rbf' (recommended)
-            mira_alpha=self.config.mira_alpha  # RBF bandwidth parameter
+            mira_alpha=self.config.mira_alpha,  # RBF bandwidth parameter
+            block_diagonal=self.config.block_diagonal,  # Zero cross-cluster edges
+            ensure_connectivity=self.config.ensure_connectivity  # Connect singletons
         )
         
         print(f"  ✓ Computed {len(adjacency_weights)} adjacency weights using {self.config.laplacian_adjacency_method}")
@@ -1144,47 +1212,113 @@ if __name__ == "__main__":
     parser.add_argument("--mode", choices=["quick", "full"], default="quick")
     parser.add_argument("-r", "--rounds", type=int, help="Override number of rounds (quick/full)")
     parser.add_argument("--resume", type=str, help="Resume from checkpoint")
+    parser.add_argument("--ablation", choices=["local_only", "fedavg_cluster", "atlas"], default="atlas",
+                       help="Ablation mode: local_only, fedavg_cluster (per-cluster FedAvg), or atlas (full pipeline)")
+    parser.add_argument("--lambda-sweep", action="store_true",
+                       help="Run lambda sweep over [0.0, 0.01, 0.1, 0.5, 1.0]")
+    parser.add_argument("--eta", type=float, help="Override Laplacian regularization strength (lambda)")
     args = parser.parse_args()
     
     if args.mode == "quick":
-        # Quick test: 3 tasks, 2 clients per task, 5 rounds
-        print("[MODE] Quick test (10-15 min on T4 GPU)")
+        # Quick test: 2 tasks, 2 clients per task, 20 rounds (MIRA-aligned)
+        print("[MODE] Quick test (20-30 min on T4 GPU)")
         config = ATLASConfig(
             model_name="distilbert-base-uncased",
             tasks=['sst2', 'mrpc'],  # 2 tasks for quick test
             clients_per_task=2,
-            num_rounds=3,
-            local_epochs=2,
+            num_rounds=20,  # Increased for MIRA convergence
+            local_epochs=2,  # Moderate local steps
             batch_size=16,
             max_samples_per_client=500,  # Small for speed
-            fingerprint_epochs=1,
-            save_every=2
+            fingerprint_epochs=2,  # 2-3 passes for fingerprinting
+            fingerprint_batches=64,  # 64 forward-backward passes
+            mode=args.ablation,  # Set ablation mode
+            save_every=5  # Less frequent checkpointing
         )
     else:
-        # Full experiment: 3 tasks, 3 clients per task, 10 rounds
+        # Full experiment: 3 tasks, 3 clients per task, 30 rounds
         print("[MODE] Full experiment (2-3 hours on T4 GPU)")
         config = ATLASConfig(
             model_name="distilbert-base-uncased",
-            tasks=['sst2', 'mrpc', 'cola'],
-            clients_per_task=3,
-            num_rounds=10,
-            local_epochs=3,
+            tasks=['sst2', 'mrpc', 'cola'],  # 3 tasks
+            clients_per_task=3,  # 9 clients total
+            num_rounds=30,  # Sufficient for convergence
+            local_epochs=2,  # Moderate local steps
             batch_size=16,
             max_samples_per_client=2000,
             fingerprint_epochs=2,
-            save_every=3
+            fingerprint_batches=64,
+            mode=args.ablation,
+            save_every=5
         )
     
-    trainer = ATLASIntegratedTrainer(config)
-    # Allow CLI override of rounds
+    # Override parameters from CLI
     if args.rounds is not None:
-        trainer.config.num_rounds = int(args.rounds)
-
-    results = trainer.run_full_pipeline(resume_from=args.resume)
+        config.num_rounds = int(args.rounds)
+    if args.eta is not None:
+        config.eta = float(args.eta)
     
-    # Save final results
-    results_path = Path("./results") / f"atlas_integrated_{args.mode}.json"
-    results_path.parent.mkdir(parents=True, exist_ok=True)
+    # Lambda sweep mode
+    if args.lambda_sweep:
+        print("\\n[LAMBDA SWEEP] Running experiments over lambda values: {0.0, 0.01, 0.1, 0.5, 1.0}")
+        print(f"Ablation mode: {config.mode}\\n")
+        
+        sweep_results = {}
+        for lambda_val in config.lambda_values:
+            print(f"\\n{'='*70}")
+            print(f"LAMBDA = {lambda_val}")
+            print(f"{'='*70}\\n")
+            
+            config.eta = lambda_val
+            trainer = ATLASIntegratedTrainer(config)
+            results = trainer.run_full_pipeline(resume_from=None)
+            
+            sweep_results[lambda_val] = {
+                'final_accuracies': results.get('final_accuracies', {}),
+                'avg_accuracy': np.mean(list(results.get('final_accuracies', {}).values())),
+                'accuracy_variance': np.var(list(results.get('final_accuracies', {}).values())),
+                'round_metrics': results.get('round_metrics', [])
+            }
+            
+            print(f"\\nLambda={lambda_val}: Avg Acc={sweep_results[lambda_val]['avg_accuracy']:.4f}, "
+                  f"Var={sweep_results[lambda_val]['accuracy_variance']:.6f}")
+        
+        # Save sweep results
+        results_path = Path("./results") / f"lambda_sweep_{args.mode}_{config.mode}.json"
+        results_path.parent.mkdir(parents=True, exist_ok=True)
+        
+        def _to_jsonable(obj):
+            if isinstance(obj, np.ndarray):
+                return obj.tolist()
+            if isinstance(obj, (np.integer, np.floating)):
+                return obj.item()
+            try:
+                import torch
+                if isinstance(obj, torch.Tensor):
+                    return obj.detach().cpu().tolist()
+            except Exception:
+                pass
+            if isinstance(obj, dict):
+                return {k: _to_jsonable(v) for k, v in obj.items()}
+            if isinstance(obj, list):
+                return [_to_jsonable(v) for v in obj]
+            return obj
+        
+        with open(results_path, 'w') as f:
+            json.dump(_to_jsonable(sweep_results), f, indent=2)
+        
+        print(f"\\n[SAVED] Lambda sweep results saved to {results_path}")
+        print("\\n[DONE] Lambda sweep complete!")
+    
+    else:
+        # Single run
+        trainer = ATLASIntegratedTrainer(config)
+
+        results = trainer.run_full_pipeline(resume_from=args.resume)
+        
+        # Save final results
+        results_path = Path("./results") / f"atlas_integrated_{args.mode}_{config.mode}.json"
+        results_path.parent.mkdir(parents=True, exist_ok=True)
     
     def _to_jsonable(obj):
         if isinstance(obj, np.ndarray):
@@ -1211,9 +1345,4 @@ if __name__ == "__main__":
             'fingerprints': _to_jsonable(results.get('fingerprints', {})),
             'clustering_metrics': _to_jsonable(results.get('clustering_metrics', {})),
             'device_configs': _to_jsonable(results.get('device_configs', {})),
-            'config': asdict(config)
-        }
-        json.dump(results_json, f, indent=2)
-    
-    print(f"\n[SAVED] Results saved to {results_path}")
-    print("\n[DONE] ATLAS integrated experiment complete!")
+                'layer_importances': _to_jsonable(results.get('layer_importances', {})),
