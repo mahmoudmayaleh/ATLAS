@@ -433,9 +433,12 @@ class RankAllocator:
         )
         
         # Greedy allocation: iterate by importance, assign highest feasible rank
+        allocation_log = []
         for layer_idx, importance in layer_importance:
             # Try ranks in descending order (capped by device capability)
             feasible_ranks = [r for r in self.rank_candidates if r <= max_device_rank]
+            assigned_rank = ranks[layer_idx]  # Track initial rank
+            
             for rank in reversed(feasible_ranks):
                 if rank <= ranks[layer_idx]:
                     # Already at or above this rank
@@ -450,7 +453,14 @@ class RankAllocator:
                 if current_memory + marginal_memory <= C_mem:
                     ranks[layer_idx] = rank
                     current_memory += marginal_memory
+                    assigned_rank = rank
                     break  # Assigned highest feasible rank for this layer
+            
+            allocation_log.append(f"L{layer_idx}:r{assigned_rank}(imp={importance:.3f})")
+        
+        # Log allocation summary for debugging (only if varies)
+        if len(set(ranks)) > 1:
+            logger.info(f"Heterogeneous allocation: {allocation_log}")
         
         return ranks
     

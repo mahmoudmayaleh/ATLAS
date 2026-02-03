@@ -791,26 +791,25 @@ def compute_adjacency_weights(
                 # In practice, you'd look at task_name metadata
                 singleton_id = client_ids[0]
                 
-                # Find other clients in OTHER clusters that share the same task
-                # For now, connect to nearest clients based on fingerprint distance
+                # Find other clients across ALL clusters based on fingerprint similarity
+                # This allows MRPC singletons in different clusters to connect to each other
                 if method == 'mira_rbf' and gradient_fingerprints is not None:
-                    # Find k nearest neighbors across ALL clients
+                    # Find k nearest neighbors across ALL clients (including other clusters)
                     all_clients = [c for cids in task_clusters.values() for c in cids]
                     singleton_idx = client_to_idx[singleton_id]
                     
-                    # Compute distances to all other clients
+                    # Compute distances to all other clients (no cluster restriction)
                     neighbor_dists = []
                     for other_cid in all_clients:
                         if other_cid != singleton_id:
                             other_idx = client_to_idx[other_cid]
                             dist_sq = pairwise_distances_sq[singleton_idx, other_idx]
-                            # Only connect to clients in same task (use cluster as proxy for task)
-                            # In a real implementation, check if client_to_task[other_cid] == client_to_task[singleton_id]
+                            # Use fingerprint distance to find similar clients (task-aware)
                             neighbor_dists.append((other_cid, dist_sq))
                     
-                    # Sort by distance and take top k=2 neighbors
+                    # Sort by distance and take top k=3 nearest neighbors (increased from 2)
                     neighbor_dists.sort(key=lambda x: x[1])
-                    k_neighbors = min(2, len(neighbor_dists))
+                    k_neighbors = min(3, len(neighbor_dists))
                     
                     if k_neighbors > 0:
                         # Compute RBF weights

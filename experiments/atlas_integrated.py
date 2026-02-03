@@ -662,6 +662,10 @@ class ATLASIntegratedTrainer:
                 importance_scores = {k: v / total_importance for k, v in importance_scores.items()}
             
             # Allocate ranks using greedy importance-aware allocator
+            # Log importance scores for debugging
+            if client_id == 0:  # Log once for first client
+                print(f"\n[Phase 2] Sample importance scores (client {client_id}): {importance_scores}")
+            
             lora_ranks = self.rank_allocator.allocate_ranks(
                 device_profile=device_profile,
                 importance_scores=importance_scores,
@@ -1220,16 +1224,16 @@ if __name__ == "__main__":
     args = parser.parse_args()
     
     if args.mode == "quick":
-        # Quick test: 2 tasks, 2 clients per task, 20 rounds (MIRA-aligned)
-        print("[MODE] Quick test (20-30 min on T4 GPU)")
+        # Quick test: 3 tasks, 3 clients per task, 20 rounds (MIRA-aligned)
+        print("[MODE] Quick test (30-45 min on T4 GPU)")
         config = ATLASConfig(
             model_name="distilbert-base-uncased",
-            tasks=['sst2', 'mrpc'],  # 2 tasks for quick test
-            clients_per_task=2,
+            tasks=['sst2', 'mrpc', 'cola'],  # 3 tasks for non-trivial clustering
+            clients_per_task=3,  # 9 clients total
             num_rounds=20,  # Increased for MIRA convergence
             local_epochs=2,  # Moderate local steps
             batch_size=16,
-            max_samples_per_client=500,  # Small for speed
+            max_samples_per_client=1500,  # Increased from 500 for better training
             fingerprint_epochs=2,  # 2-3 passes for fingerprinting
             fingerprint_batches=64,  # 64 forward-backward passes
             mode=args.ablation,  # Set ablation mode
