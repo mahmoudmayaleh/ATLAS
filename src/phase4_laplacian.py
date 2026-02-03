@@ -718,31 +718,52 @@ class LaplacianAggregation:
 
 def compute_adjacency_weights(
     task_clusters: Dict[int, List[int]],
+    gradient_fingerprints: Optional[Dict[int, np.ndarray]] = None,
     gradient_similarities: Optional[np.ndarray] = None,
     client_performance: Optional[Dict[int, float]] = None,
-    method: Literal['uniform', 'similarity', 'adaptive'] = 'uniform',
-    adaptive_beta: float = 1.0
+    method: Literal['uniform', 'similarity', 'adaptive', 'mira_rbf'] = 'mira_rbf',
+    adaptive_beta: float = 1.0,
+    mira_alpha: float = 1.0
 ) -> Dict[Tuple[int, int], float]:
     """
     Compute adjacency weights a_kℓ for Laplacian regularization.
     
-    Integrates with Phase 1 (gradient similarities) and Phase 3 (performance).
+    IMPROVED: Now supports MIRA's RBF kernel from Phase 1 fingerprints:
+        a_kℓ = exp(-α ||f_k - f_ℓ||²)
+    
+    Integrates with Phase 1 (gradient fingerprints/similarities) and Phase 3 (performance).
     
     Args:
         task_clusters: Clustering results from Phase 1
-        gradient_similarities: Pairwise gradient similarity matrix (Phase 1)
+        gradient_fingerprints: Per-client fingerprints from Phase 1 (RECOMMENDED)
+        gradient_similarities: Pairwise gradient similarity matrix (Phase 1, legacy)
         client_performance: Per-client validation accuracy (Phase 3)
         method: Weight computation method:
             'uniform': Equal weight to all neighbors
-            'similarity': Weight by gradient similarity (Phase 1)
+            'similarity': Weight by gradient similarity (Phase 1, legacy)
             'adaptive': Weight by similarity * performance (Phase 1 + Phase 3)
+            'mira_rbf': MIRA's RBF kernel a_kℓ = exp(-α||f_k - f_ℓ||²) (RECOMMENDED)
         adaptive_beta: Temperature for adaptive weighting (higher = more emphasis on performance)
+        mira_alpha: RBF kernel bandwidth parameter (higher = faster decay with distance)
     
     Returns:
         Dictionary mapping (client_i, client_j) -> weight
         Normalized so Σ_ℓ a_kℓ = 1 for each client k
     """
     weights = {}
+    
+    # Pre-compute pairwise distances for MIRA RBF method
+    if method == 'mira_rbf' and gradient_fingerprints is not None:
+        # Convert fingerprints to array for efficient distance computation
+        client_ids_sorted = sorted(gradient_fingerprints.keys())
+        fingerprint_array = np.vstack([gradient_fingerprints[cid] for cid in client_ids_sorted])
+        
+        # Compute pairwise L2 distances: ||f_k - f_ℓ||²
+        from scipy.spatial.distance import cdist
+        pairwise_distances_sq = cdist(fingerprint_array, fingerprint_array, metric='sqeuclidean')
+        
+        # Build client_id -> index mapping
+        client_to_idx = {cid: idx for idx, cid in enumerate(client_ids_sorted)}
     
     for group_id, client_ids in task_clusters.items():
         n_clients = len(client_ids)
@@ -763,8 +784,19 @@ def compute_adjacency_weights(
                     # Equal weight to all neighbors
                     weight = 1.0
                 
+                elif method == 'mira_rbf':
+                    # MIRA's RBF kernel: a_kℓ = exp(-α ||f_k - f_ℓ||²)
+                    if gradient_fingerprints is not None:
+                        idx_i = client_to_idx[client_i]
+                        idx_j = client_to_idx[client_j]
+                        dist_sq = pairwise_distances_sq[idx_i, idx_j]
+                        weight = np.exp(-mira_alpha * dist_sq)
+                    else:
+                        logger.warning("mira_rbf method requires gradient_fingerprints, falling back to uniform")
+                        weight = 1.0
+                
                 elif method == 'similarity':
-                    # Weight by gradient similarity (Phase 1)
+                    # Weight by gradient similarity (Phase 1, legacy)
                     if gradient_similarities is not None:
                         sim = gradient_similarities[client_i, client_j]
                         weight = max(sim, 0.0)  # Clip negative similarities

@@ -3,16 +3,19 @@
 Date: 2026-01-29
 
 ## Overview
+
 - Mode: full
 - Completed rounds: 15
 - Total runtime: 53.1 minutes
 
 ## Phase 1 — Task Clustering
+
 - Num Clusters: 5
 - Cluster Assignments: {'0': 0, '1': 0, '2': 0, '3': 2, '4': 4, '5': 1, '6': 2, '7': 3, '8': 1}
 - Silhouette Score: 0.011
 
 ## Phase 2 — Device Profiles (sample)
+
 - Example client device profiles & allocated ranks:
   - Client 0: {'memory_mb': 2048, 'compute_ratio': 1.0, 'suggested_ranks': [4, 8]} (ranks [8, 8, 8, 8, 8, 8])
   - Client 5: {'memory_mb': 8192, 'compute_ratio': 4.0, 'suggested_ranks': [16, 32]} (ranks [32, 32, 32, 32, 32, 32])
@@ -42,5 +45,6 @@ Checkpoint saved: `checkpoints/atlas_round_15.pkl`
 ```
 
 ## Notes
+
 - The saved checkpoint `atlas_round_15.pkl` contains model states, device configs, clustering metadata, and intermediate results. Use the `--resume` flag to continue from this file.
 - If you want this summary added to the repository README instead, tell me and I will append a short entry linking to this file.
