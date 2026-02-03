@@ -419,44 +419,83 @@ class RankAllocator:
         if total_importance > 1e-8:
             layer_importance = [(idx, imp / total_importance) for idx, imp in layer_importance]
         
-        # Sort layers by importance (descending) - HSplitLoRA greedy allocation
-        layer_importance.sort(key=lambda x: x[1], reverse=True)
+        # **FIXED ALGORITHM**: Budget-proportional allocation
+        # Old greedy algorithm failed because incrementally upgrading each layer
+        # allowed all layers to reach same rank (budget was permissive enough)
         
-        # Initialize ranks to minimum
+        # 1. Find maximum uniform rank that fits in budget
+        n_alloc = len(layers_to_allocate)
+        if n_alloc == 0:
+            return [self.rank_candidates[0]] * n_layers
+        
         min_rank = self.rank_candidates[0]
-        ranks = [min_rank] * n_layers
+        max_rank = min(self.rank_candidates[-1], max_device_rank)
         
-        # Account for initial minimum rank allocation memory
+        # Find best uniform rank (baseline)
+        best_uniform_rank = min_rank
+        for r in self.rank_candidates:
+            if r > max_rank:
+                break
+            memory = n_alloc * self.compute_rank_memory(r)
+            if memory <= C_mem:
+                best_uniform_rank = r
+        
+        # 2. Define total rank budget (ensures same memory as uniform allocation)
+        total_rank_budget = n_alloc * best_uniform_rank
+        
+        # 3. Distribute budget proportionally to importance
+        ranks = [min_rank] * n_layers
+        for layer_idx, importance in layer_importance:
+            # Allocate rank proportional to importance
+            target_rank = importance * total_rank_budget
+            
+            # Clamp to device capability
+            target_rank = min(target_rank, max_device_rank)
+            
+            # Round to nearest valid candidate
+            ranks[layer_idx] = self._select_rank(target_rank)
+        
+        # 4. Validate and adjust if over budget
         current_memory = sum(
-            self.compute_rank_memory(min_rank) 
+            self.compute_rank_memory(ranks[layer_idx]) 
             for layer_idx in layers_to_allocate
         )
         
-        # Greedy allocation: iterate by importance, assign highest feasible rank
+        # If over budget, reduce ranks starting from least important
+        layer_importance_sorted = sorted(layer_importance, key=lambda x: x[1])  # ascending
+        attempt = 0
+        max_attempts = n_alloc * len(self.rank_candidates)
+        while current_memory > C_mem and attempt < max_attempts:
+            attempt += 1
+            downgraded = False
+            # Find least important layer with rank > min
+            for layer_idx, _ in layer_importance_sorted:
+                if ranks[layer_idx] > min_rank:
+                    # Downgrade to next lower rank
+                    old_rank = ranks[layer_idx]
+                    try:
+                        rank_idx = self.rank_candidates.index(old_rank)
+                        if rank_idx > 0:
+                            new_rank = self.rank_candidates[rank_idx - 1]
+                            old_memory = self.compute_rank_memory(old_rank)
+                            new_memory = self.compute_rank_memory(new_rank)
+                            ranks[layer_idx] = new_rank
+                            current_memory += (new_memory - old_memory)
+                            downgraded = True
+                            
+                            if current_memory <= C_mem:
+                                break
+                    except ValueError:
+                        continue
+            
+            if not downgraded:
+                break  # No more downgrades possible
+        
+        # Log allocation summary
         allocation_log = []
-        for layer_idx, importance in layer_importance:
-            # Try ranks in descending order (capped by device capability)
-            feasible_ranks = [r for r in self.rank_candidates if r <= max_device_rank]
-            assigned_rank = ranks[layer_idx]  # Track initial rank
-            
-            for rank in reversed(feasible_ranks):
-                if rank <= ranks[layer_idx]:
-                    # Already at or above this rank
-                    continue
-                
-                # Compute marginal memory cost (upgrade from current to new rank)
-                old_rank_memory = self.compute_rank_memory(ranks[layer_idx])
-                new_rank_memory = self.compute_rank_memory(rank)
-                marginal_memory = new_rank_memory - old_rank_memory
-                
-                # Check if upgrade fits in budget
-                if current_memory + marginal_memory <= C_mem:
-                    ranks[layer_idx] = rank
-                    current_memory += marginal_memory
-                    assigned_rank = rank
-                    break  # Assigned highest feasible rank for this layer
-            
-            allocation_log.append(f"L{layer_idx}:r{assigned_rank}(imp={importance:.3f})")
+        for layer_idx in layers_to_allocate:
+            importance = next((imp for idx, imp in layer_importance if idx == layer_idx), 0.0)
+            allocation_log.append(f"L{layer_idx}:r{ranks[layer_idx]}(imp={importance:.3f})")
         
         # Log allocation summary for debugging (only if varies)
         if len(set(ranks)) > 1:
