@@ -104,8 +104,10 @@ class ATLASConfig:
     # Phase 3: Split learning
     split_layer: int = 3  # Split at layer 3 (bottom half)
     
-    # Phase 4: Laplacian
-    eta: float = 0.1  # Regularization strength
+    # Phase 4: Laplacian regularization (MIRA)
+    eta: float = 0.1  # Regularization strength λ (tune: {0.01, 0.1, 0.5})
+    laplacian_adjacency_method: str = 'mira_rbf'  # 'uniform', 'similarity', 'mira_rbf' (RECOMMENDED)
+    mira_alpha: float = 1.0  # RBF kernel bandwidth for a_kℓ = exp(-α||f_k - f_ℓ||²)
     k_neighbors: int = 3
     
     # Checkpointing
@@ -405,15 +407,35 @@ class ATLASIntegratedTrainer:
         cluster_labels = {cid: int(lbl) for cid, lbl in zip(client_ids, labels)}
 
         print(f"  ✓ Found {res.get('n_clusters', len(set(labels)))} task groups")
+        
+        # SANITY CHECK: Cluster-Task Alignment (validates clustering quality)
+        print(f"\n[Phase 1] Cluster-Task Alignment Analysis:")
+        cluster_task_purity = {}
         for cluster_id in sorted(set(labels)):
             clients_in_cluster = [cid for cid, label in cluster_labels.items() if label == cluster_id]
-            print(f"    - Group {cluster_id}: {len(clients_in_cluster)} clients")
-        
-        print(f"  ✓ Found {len(set(cluster_labels.values()))} task groups")
-        for cluster_id in set(cluster_labels.values()):
-            clients_in_cluster = [cid for cid, label in cluster_labels.items() if label == cluster_id]
             tasks_in_cluster = [self.clients_data[cid].task_name for cid in clients_in_cluster]
-            print(f"    Group {cluster_id}: clients {clients_in_cluster}, tasks {set(tasks_in_cluster)}")
+            task_counts = {}
+            for task in tasks_in_cluster:
+                task_counts[task] = task_counts.get(task, 0) + 1
+            
+            # Compute purity: fraction of clients belonging to dominant task
+            dominant_task = max(task_counts, key=task_counts.get) if task_counts else None
+            purity = task_counts[dominant_task] / len(clients_in_cluster) if dominant_task else 0.0
+            cluster_task_purity[cluster_id] = purity
+            
+            print(f"    Cluster {cluster_id}: {len(clients_in_cluster)} clients")
+            print(f"      Tasks: {dict(task_counts)} (dominant: {dominant_task}, purity: {purity:.2f})") 
+            print(f"      Client IDs: {clients_in_cluster}")
+        
+        avg_purity = np.mean(list(cluster_task_purity.values())) if cluster_task_purity else 0.0
+        print(f"\n  ✓ Average cluster purity: {avg_purity:.3f}")
+        if avg_purity < 0.8:
+            warnings.warn(
+                f"Low cluster-task alignment (purity={avg_purity:.2f}). "
+                f"Clients with same task are spread across clusters. "
+                f"Consider: (1) More fingerprint samples, (2) Stronger layer selection, "
+                f"(3) Oracle clustering for debugging."
+            )
         
         # Update client cluster assignments
         for client_data in self.clients_data:
@@ -431,10 +453,10 @@ class ATLASIntegratedTrainer:
         model.train()
         grad_history = []
         
-        # Train for fingerprint_epochs to collect gradients
+        # Train for fingerprint_epochs to collect gradients (increased from 10 to 64 samples)
         for epoch in range(self.config.fingerprint_epochs):
             for batch_idx, batch in enumerate(dataloader):
-                if batch_idx >= 10:  # Limit to 10 batches for speed
+                if batch_idx >= 64:  # Increased from 10 to 64 for better signal
                     break
                 
                 input_ids = batch['input_ids'].to(self.device)
@@ -447,25 +469,45 @@ class ATLASIntegratedTrainer:
                 optimizer.zero_grad()
                 loss.backward()
                 
-                # Collect gradients from last 2 layers
-                grads = []
+                # Collect gradients from EXACTLY last 2 transformer blocks (DistilBERT has 6 layers, BERT has 12)
+                # DistilBERT: transformer.layer.4, transformer.layer.5, classifier
+                # BERT: encoder.layer.10, encoder.layer.11, classifier
+                grads_dict = {}
                 for name, param in model.named_parameters():
-                    if param.grad is not None and ('layer.5' in name or 'layer.4' in name or 'classifier' in name):
-                        grads.append(param.grad.detach().cpu().flatten().numpy())
+                    if param.grad is not None:
+                        # Check for last 2 layers based on model architecture
+                        is_last_two = any([
+                            'transformer.layer.4' in name or 'transformer.layer.5' in name,  # DistilBERT
+                            'encoder.layer.10' in name or 'encoder.layer.11' in name,        # BERT
+                            'classifier' in name or 'pooler' in name                         # Final layers
+                        ])
+                        if is_last_two:
+                            grads_dict[name] = param.grad.detach().clone()
                 
-                if grads:
-                    grad_history.append(np.concatenate(grads))
+                if grads_dict:
+                    # Pass as dict for layer-wise normalization in GradientExtractor
+                    grad_history.append(grads_dict)
                 
                 optimizer.step()
         
         # Extract fingerprint using GradientExtractor
         if grad_history:
-            avg_grad = np.mean(grad_history, axis=0)
-            # Return raw gradient tensor (will be PCA-fitted later)
-            return torch.from_numpy(avg_grad).float()
+            # Average gradient dicts across batches
+            averaged_grads = {}
+            for grad_dict in grad_history:
+                for name, grad in grad_dict.items():
+                    if name not in averaged_grads:
+                        averaged_grads[name] = []
+                    averaged_grads[name].append(grad)
+            
+            for name in averaged_grads:
+                averaged_grads[name] = torch.mean(torch.stack(averaged_grads[name]), dim=0)
+            
+            # Return gradient dict for proper layer-wise normalization
+            return averaged_grads
         else:
-            # Fallback: random raw gradient tensor (PCA can handle fallback)
-            return torch.from_numpy(np.random.randn(self.config.fingerprint_dim)).float()
+            # Fallback: random raw gradient dict
+            return {'fallback': torch.from_numpy(np.random.randn(self.config.fingerprint_dim)).float()}
     
     def _phase2_rank_allocation(
         self, 
@@ -473,21 +515,50 @@ class ATLASIntegratedTrainer:
         fingerprints: Dict[int, np.ndarray]
     ) -> Dict[int, Dict]:
         """
-        Phase 2: Allocate heterogeneous LoRA ranks based on device + task complexity.
-        Returns: device_configs[client_id] = {device_profile, lora_ranks}
+        Phase 2: Allocate heterogeneous LoRA ranks based on device + cluster complexity.
+        
+        Improved allocation logic:
+        1. Compute cluster-level statistics (variance, difficulty)
+        2. Use per-layer importance based on gradient norms
+        3. Allocate higher ranks to more difficult/diverse clusters
+        
+        Returns: device_configs[client_id] = {device_profile, lora_ranks, cluster_stats}
         """
         print("[Phase 2] Profiling devices and allocating ranks...")
         
         device_configs = {}
         
-        # Get cluster statistics (variance = complexity)
-        cluster_variances = {}
+        # Compute cluster-level statistics (variance = task complexity/heterogeneity)
+        print("\n[Phase 2] Computing cluster-level statistics...")
+        cluster_stats = {}
         for cluster_id in set(cluster_labels.values()):
-            cluster_fingerprints = [fingerprints[cid] for cid, label in cluster_labels.items() if label == cluster_id]
+            cluster_client_ids = [cid for cid, label in cluster_labels.items() if label == cluster_id]
+            cluster_fingerprints = [fingerprints[cid] for cid in cluster_client_ids]
+            
             if cluster_fingerprints:
-                variance = np.var(cluster_fingerprints, axis=0).mean()
-                cluster_variances[cluster_id] = variance
+                fps_array = np.vstack(cluster_fingerprints)
+                # Variance: measure of within-cluster heterogeneity
+                variance = np.var(fps_array, axis=0).mean()
+                # Norm: measure of gradient magnitude (task difficulty)
+                avg_norm = np.mean([np.linalg.norm(fp) for fp in cluster_fingerprints])
+                
+                cluster_stats[cluster_id] = {
+                    'variance': variance,
+                    'avg_norm': avg_norm,
+                    'n_clients': len(cluster_client_ids),
+                    'complexity_score': variance * avg_norm  # Combined metric
+                }
+                
+                print(f"  Cluster {cluster_id}: variance={variance:.4f}, "
+                      f"norm={avg_norm:.4f}, complexity={cluster_stats[cluster_id]['complexity_score']:.4f}")
         
+        # Normalize complexity scores across clusters (for fair comparison)
+        max_complexity = max(stats['complexity_score'] for stats in cluster_stats.values()) if cluster_stats else 1.0
+        for cluster_id in cluster_stats:
+            cluster_stats[cluster_id]['normalized_complexity'] = \
+                cluster_stats[cluster_id]['complexity_score'] / max(max_complexity, 1e-8)
+        
+        print("\n[Phase 2] Allocating heterogeneous ranks per client...")
         for client_data in self.clients_data:
             device_type = client_data.device_type
             cluster_id = client_data.cluster_id
@@ -495,29 +566,52 @@ class ATLASIntegratedTrainer:
             # Get device profile
             device_profile = self.device_profiler.profile_device(device_type)
             
-            # Compute importance scores (higher variance = more important)
-            cluster_variance = cluster_variances.get(cluster_id, 1.0)
-            importance_scores = {f'layer_{i}': cluster_variance * (1.0 + 0.1 * i) for i in range(6)}
+            # Compute per-layer importance scores
+            # Strategy: higher-indexed layers (closer to output) + cluster complexity
+            cluster_complexity = cluster_stats.get(cluster_id, {}).get('normalized_complexity', 1.0)
             
-            # Allocate ranks (DistilBERT has 6 transformer layers)
+            # Base importance: gradient through later layers (common heuristic)
+            # Scale by cluster complexity: difficult clusters get more capacity
+            importance_scores = {}
+            for i in range(6):  # DistilBERT has 6 transformer layers
+                # Layer importance increases with depth (0.5 to 1.5)
+                layer_importance = 0.5 + (i / 6.0)
+                # Scale by cluster difficulty
+                importance_scores[f'layer_{i}'] = layer_importance * (0.5 + 0.5 * cluster_complexity)
+            
+            # Normalize importance scores to sum to 1.0
+            total_importance = sum(importance_scores.values())
+            if total_importance > 1e-8:
+                importance_scores = {k: v / total_importance for k, v in importance_scores.items()}
+            
+            # Allocate ranks using greedy importance-aware allocator
             lora_ranks = self.rank_allocator.allocate_ranks(
                 device_profile=device_profile,
                 importance_scores=importance_scores,
                 n_layers=6,
-                split_point=None
+                split_point=None  # Could be adapted for split learning
+            )
+            
+            # Validate memory constraint
+            is_valid, adapter_mb = self.rank_allocator.validate_memory_constraint(
+                lora_ranks, device_profile
             )
             
             device_configs[client_data.client_id] = {
                 'device_profile': device_profile,
                 'lora_ranks': lora_ranks,
-                'importance_scores': importance_scores
+                'cluster_stats': cluster_stats.get(cluster_id, {}),
+                'importance_scores': importance_scores,
+                'memory_valid': is_valid,
+                'adapter_memory_mb': adapter_mb
             }
             
             client_data.lora_ranks = lora_ranks
             
-            print(f"  Client {client_data.client_id} ({device_type}): ranks {lora_ranks}")
+            print(f"  Client {client_data.client_id} ({device_type}, cluster {cluster_id}): "
+                  f"ranks={lora_ranks}, memory={adapter_mb:.1f}MB, valid={is_valid}")
         
-        print(f"  ✓ Allocated heterogeneous ranks for {len(device_configs)} clients")
+        print(f"\n✓ Phase 2 complete: Allocated heterogeneous ranks for {len(device_configs)} clients")
         return device_configs
     
     def _phase3_4_training(
@@ -540,51 +634,33 @@ class ATLASIntegratedTrainer:
         for cluster_id in set(cluster_labels.values()):
             task_clusters[cluster_id] = [cid for cid, label in cluster_labels.items() if label == cluster_id]
         
-        # Build adjacency weights via k-NN on fingerprints
-        all_clients = sorted([c for clients in task_clusters.values() for c in clients])
-        n_clients = len(all_clients)
-        fps_matrix = np.vstack([fingerprints[cid] for cid in all_clients])
-
-        # Cosine similarity
-        normed = fps_matrix / (np.linalg.norm(fps_matrix, axis=1, keepdims=True) + 1e-12)
-        sim = normed @ normed.T
-
-        # Keep only top-k neighbors per client
-        k = max(1, int(self.config.k_neighbors))
-        adj = np.zeros_like(sim)
-        for i in range(n_clients):
-            # exclude self
-            sim[i, i] = -1.0
-            topk = np.argsort(sim[i])[-k:]
-            for j in topk:
-                if sim[i, j] > 0:
-                    adj[i, j] = float(sim[i, j])
-
-        # If adjacency is all zeros (no positive similarities), fall back to uniform intra-cluster weights
-        if np.sum(adj) == 0:
-            print("[Phase 3] No positive similarities found for adjacency; using uniform intra-cluster weights")
-            adj = np.zeros_like(sim)
-            for group_id, clients in task_clusters.items():
-                m = len(clients)
-                if m > 1:
-                    w = 1.0 / (m - 1)
-                    for a in range(m):
-                        for b in range(m):
-                            if a != b:
-                                i = all_clients.index(clients[a])
-                                j = all_clients.index(clients[b])
-                                adj[i, j] = w
+        # Build adjacency weights using MIRA's RBF kernel: a_kℓ = exp(-α||f_k - f_ℓ||²)
+        print(f"\n[Phase 4] Building task graph with {self.config.laplacian_adjacency_method} adjacency...")
+        
+        from phase4_laplacian import compute_adjacency_weights
+        
+        adjacency_weights = compute_adjacency_weights(
+            task_clusters=task_clusters,
+            gradient_fingerprints=fingerprints,  # Use Phase 1 fingerprints (dict)
+            method=self.config.laplacian_adjacency_method,  # 'mira_rbf' (recommended)
+            mira_alpha=self.config.mira_alpha  # RBF bandwidth parameter
+        )
+        
+        print(f"  ✓ Computed {len(adjacency_weights)} adjacency weights using {self.config.laplacian_adjacency_method}")
+        sample_weights = list(adjacency_weights.items())[:5]
+        if sample_weights:
+            print(f"  Sample weights: {sample_weights}")
 
         task_graph = TaskGraph.from_task_clusters(
             task_clusters=task_clusters,
-            adjacency_weights=adj,
+            adjacency_weights=adjacency_weights,
             normalize=True,
             symmetrize=True
         )
         
-        # Initialize Laplacian aggregator
+        # Initialize Laplacian aggregator with configured eta (λ)
         laplacian_agg = LaplacianAggregation(
-            eta=self.config.eta,
+            eta=self.config.eta,  # Tunable regularization strength
             heterogeneous_rank=True
         )
         

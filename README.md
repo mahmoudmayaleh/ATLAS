@@ -50,6 +50,17 @@ ATLAS is a comprehensive federated learning framework that combines four state-o
 - **Accuracy:** Comparable or better than baselines
 - **Device Support:** 5× more devices (smartphones included)
 
+### 🆕 February 2026: Literature-Grounded Improvements
+
+Following detailed analysis and MIRA/HSplitLoRA literature recommendations:
+
+- ✅ **Phase 1:** Strengthened fingerprinting (64+ samples, last-2-layers, multi-metric k-selection)
+- ✅ **Phase 2:** Importance-aware rank allocation coupled with cluster complexity
+- ✅ **Phase 4:** MIRA's RBF adjacency: $a_{k\ell} = \exp(-\alpha \|f_k - f_\ell\|^2)$
+- ✅ **Visualizations:** Adjacency heatmap, cluster metrics, rank allocation plots
+
+📖 **Full documentation:** [`docs/LITERATURE_IMPROVEMENTS.md`](docs/LITERATURE_IMPROVEMENTS.md)
+
 <div align="center">
 <img src="figures/convergence_accuracy.png" width="45%">
 <img src="figures/comparison_accuracy.png" width="45%">

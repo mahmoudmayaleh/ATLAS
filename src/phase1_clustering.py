@@ -193,7 +193,14 @@ class GradientExtractor:
         print(f"PCA fitted: {grad_matrix.shape[0]} samples, {grad_matrix.shape[1]} features")
         print(f"Using {n_components} components (target was {self.dim})")
         if hasattr(self.pca, 'explained_variance_ratio_'):
-            print(f"Explained variance ratio: {self.pca.explained_variance_ratio_.sum():.4f}")
+            total_variance = self.pca.explained_variance_ratio_.sum()
+            print(f"Explained variance ratio: {total_variance:.4f}")
+            print(f"Top 3 components explain: {self.pca.explained_variance_ratio_[:3].sum():.4f}")
+            if total_variance < 0.7:
+                warnings.warn(
+                    f"Low explained variance ({total_variance:.2f}). "
+                    f"Fingerprints may have weak signal. Consider increasing fingerprint_epochs."
+                )
     
     def extract(self, gradients: Union[Dict[str, torch.Tensor], torch.Tensor]) -> np.ndarray:
         """
