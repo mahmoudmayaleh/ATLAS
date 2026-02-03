@@ -832,9 +832,14 @@ def compute_adjacency_weights(
                             # Also add reverse edge for symmetry
                             if (other_cid, singleton_id) not in weights:
                                 weights[(other_cid, singleton_id)] = weight
+                        
+                        # Log singleton connectivity
+                        neighbor_ids = [cid for cid, _ in neighbor_weights]
+                        logger.info(f"Singleton client {singleton_id} connected to {neighbor_ids} "
+                                  f"with weights {[f'{w:.3f}' for _, w in neighbor_weights]}")
                 else:
                     # Fallback: no neighbors for singleton (will be isolated)
-                    logger.debug(f"Singleton client {singleton_id} has no neighbors")
+                    logger.warning(f"Singleton client {singleton_id} has no neighbors - isolated!")
             continue
         
         for client_i in client_ids:

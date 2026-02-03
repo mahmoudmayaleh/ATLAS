@@ -370,6 +370,7 @@ class TaskClusterer:
         - Silhouette (maximize, range [-1, 1])
         - Davies-Bouldin (minimize, range [0, ∞))
         - Calinski-Harabasz (maximize, range [0, ∞))
+        - Singleton penalty (penalize fragmentation)
         
         Returns normalized score in [0, 1]
         """
@@ -377,13 +378,18 @@ class TaskClusterer:
         db = davies_bouldin_score(fingerprints, labels)
         ch = calinski_harabasz_score(fingerprints, labels)
         
+        # Count singleton clusters (size=1) - penalize fragmentation
+        cluster_sizes = np.bincount(labels)
+        n_singletons = np.sum(cluster_sizes == 1)
+        singleton_penalty = 0.15 * n_singletons  # 0.15 penalty per singleton
+        
         # Normalize scores to [0, 1]
         sil_norm = (sil + 1) / 2  # [-1, 1] → [0, 1]
         db_norm = 1 / (1 + db)     # Lower is better, asymptotic to 1
         ch_norm = ch / (ch + 1000) # Normalize by typical range
         
-        # Weighted combination (can be tuned)
-        combined = 0.5 * sil_norm + 0.3 * db_norm + 0.2 * ch_norm
+        # Weighted combination (can be tuned) - subtract singleton penalty
+        combined = 0.5 * sil_norm + 0.3 * db_norm + 0.2 * ch_norm - singleton_penalty
         
         return combined
     
@@ -494,8 +500,11 @@ class TaskClusterer:
             if verbose:
                 sil = silhouette_score(fingerprints, labels)
                 db = davies_bouldin_score(fingerprints, labels)
+                cluster_sizes = np.bincount(labels)
+                n_singletons = np.sum(cluster_sizes == 1)
                 print(f"k={n_clusters}: Combined={total_score:.4f} "
-                      f"(Sil={sil:.3f}, DB={db:.3f}, Temporal={temporal_consistency:.3f})")
+                      f"(Sil={sil:.3f}, DB={db:.3f}, Temporal={temporal_consistency:.3f}, "
+                      f"Singletons={n_singletons})")
             
             # Track best clustering
             if total_score > best_score:
