@@ -268,6 +268,54 @@ class ATLASIntegratedTrainer:
             dataset = load_dataset(dataset_name, task_name, split='train')
             test_dataset = load_dataset(dataset_name, task_name, split='validation')
         
+        # Deduplicate within splits and remove train↔val overlap
+        import hashlib
+        def _text_hash(example):
+            a = example.get(text_col) or ""
+            if text_col2:
+                b = example.get(text_col2) or ""
+                s = f"{a} ||| {b}"
+            else:
+                s = a
+            return hashlib.sha1(s.encode('utf-8')).hexdigest()
+        
+        # Build unique index lists for train
+        train_hash_to_idx = {}
+        unique_train_idxs = []
+        for i, ex in enumerate(dataset):
+            h = _text_hash(ex)
+            if h in train_hash_to_idx:
+                continue
+            train_hash_to_idx[h] = i
+            unique_train_idxs.append(i)
+        
+        # Build unique index lists for validation
+        val_hash_to_idx = {}
+        unique_val_idxs = []
+        for i, ex in enumerate(test_dataset):
+            h = _text_hash(ex)
+            if h in val_hash_to_idx:
+                continue
+            val_hash_to_idx[h] = i
+            unique_val_idxs.append(i)
+        
+        # Remove any train examples that overlap with validation
+        overlap_hashes = set(train_hash_to_idx.keys()) & set(val_hash_to_idx.keys())
+        if overlap_hashes:
+            print(f"  [DEDUP] Removing {len(overlap_hashes)} train↔val overlaps from {task_name}")
+            remove_idxs = {train_hash_to_idx[h] for h in overlap_hashes}
+            unique_train_idxs = [i for i in unique_train_idxs if i not in remove_idxs]
+        
+        # Apply deduplication
+        train_before = len(dataset)
+        val_before = len(test_dataset)
+        if len(unique_train_idxs) != train_before:
+            dataset = dataset.select(unique_train_idxs)
+            print(f"  [DEDUP] Removed {train_before - len(dataset)} duplicates from {task_name} train")
+        if len(unique_val_idxs) != val_before:
+            test_dataset = test_dataset.select(unique_val_idxs)
+            print(f"  [DEDUP] Removed {val_before - len(test_dataset)} duplicates from {task_name} val")
+        
         # Tokenize
         def tokenize_fn(examples):
             if text_col2:
