@@ -523,7 +523,8 @@ class ATLASIntegratedTrainer:
                             'classifier' in name or 'pooler' in name                         # Final layers
                         ])
                         if is_last_two:
-                            grad_tensor = param.grad.detach().clone()
+                            # Move to CPU immediately to avoid GPU OOM
+                            grad_tensor = param.grad.detach().cpu().clone()
                             grads_dict[name] = grad_tensor
                             
                             # Compute layer-level importance (squared gradient norm)
@@ -546,6 +547,9 @@ class ATLASIntegratedTrainer:
                 if grads_dict:
                     # Pass as dict for layer-wise normalization in GradientExtractor
                     grad_history.append(grads_dict)
+                
+                # Clear gradients immediately
+                model.zero_grad(set_to_none=True)
                 
                 # Clear memory after EVERY batch to prevent OOM on T4
                 del input_ids, attention_mask, labels, outputs, loss, grads_dict
