@@ -485,7 +485,7 @@ class ATLASIntegratedTrainer:
         
         # Use smaller batch size for memory-intensive fingerprint extraction
         dataloader = DataLoader(dataset, batch_size=self.config.fingerprint_batch_size, shuffle=True)
-        optimizer = torch.optim.AdamW(model.parameters(), lr=self.config.learning_rate)
+        # NO OPTIMIZER - we only need gradients, not weight updates
         
         model.train()
         grad_history = []
@@ -502,10 +502,12 @@ class ATLASIntegratedTrainer:
                 attention_mask = batch['attention_mask'].to(self.device)
                 labels = batch['label'].to(self.device)
                 
+                # Zero gradients manually (no optimizer)
+                model.zero_grad()
+                
                 outputs = model(input_ids=input_ids, attention_mask=attention_mask, labels=labels)
                 loss = outputs.loss
                 
-                optimizer.zero_grad()
                 loss.backward()
                 
                 # Collect gradients from EXACTLY last 2 transformer blocks (DistilBERT has 6 layers, BERT has 12)
@@ -544,8 +546,6 @@ class ATLASIntegratedTrainer:
                 if grads_dict:
                     # Pass as dict for layer-wise normalization in GradientExtractor
                     grad_history.append(grads_dict)
-                
-                optimizer.step()
                 
                 # Clear memory after EVERY batch to prevent OOM on T4
                 del input_ids, attention_mask, labels, outputs, loss, grads_dict
