@@ -52,6 +52,7 @@ warnings.filterwarnings('ignore')
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader, Subset
+from torch.cuda.amp import autocast
 from transformers import AutoTokenizer, AutoModelForSequenceClassification
 from datasets import load_dataset
 import numpy as np
@@ -84,7 +85,7 @@ class ATLASConfig:
     num_rounds: int = 20  # Increased to 20-30 for MIRA convergence
     local_epochs: int = 2  # Keep moderate (1-2 epochs per round)
     batch_size: int = 16
-    fingerprint_batch_size: int = 2  # Very small batch for T4 GPU memory constraints
+    fingerprint_batch_size: int = 1  # Absolute minimum for T4 GPU with large datasets
     max_samples_per_client: int = 2000
     learning_rate: float = 2e-5
     
@@ -92,11 +93,12 @@ class ATLASConfig:
     device_types: List[str] = None  # e.g., ['cpu_2gb', 'tablet_4gb', 'laptop_8gb', 'gpu_16gb']
     
     # Phase 1: Clustering
-    fingerprint_epochs: int = 2  # Epochs for gradient extraction (2-3 passes)
-    fingerprint_batches: int = 50  # Reduced from 64 to reduce memory pressure
+    fingerprint_epochs: int = 1  # Reduced to 1 epoch for memory efficiency
+    fingerprint_batches: int = 30  # Reduced to 30 batches (30 samples with batch_size=1)
+    fingerprint_samples: int = 500  # Use only 500 samples for fingerprinting (sufficient for gradient analysis)
     fingerprint_dim: int = 64  # Target PCA dimension
     k_range: Tuple[int, int] = (2, 5)  # Try k=2,3,4,5 clusters
-    # NOTE: For T4 GPU (15GB), use max_samples_per_client <= 2000. For 5000+ samples, use A100/V100
+    # NOTE: For T4 GPU (15GB), fingerprinting uses only 500 samples regardless of max_samples_per_client
     
     # Phase 2: LoRA ranks
     rank_candidates: List[int] = None  # [4, 8, 16, 32, 64] - greedy importance-aware
@@ -483,8 +485,16 @@ class ATLASIntegratedTrainer:
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
         
+        # Enable gradient checkpointing to reduce memory
+        if hasattr(model, 'gradient_checkpointing_enable'):
+            model.gradient_checkpointing_enable()
+        
+        # Limit dataset to fingerprint_samples for memory efficiency
+        fingerprint_size = min(len(dataset), self.config.fingerprint_samples)
+        fingerprint_subset = Subset(dataset.dataset, list(dataset.indices[:fingerprint_size]))
+        
         # Use smaller batch size for memory-intensive fingerprint extraction
-        dataloader = DataLoader(dataset, batch_size=self.config.fingerprint_batch_size, shuffle=True)
+        dataloader = DataLoader(fingerprint_subset, batch_size=self.config.fingerprint_batch_size, shuffle=True)
         # NO OPTIMIZER - we only need gradients, not weight updates
         
         model.train()
@@ -505,8 +515,10 @@ class ATLASIntegratedTrainer:
                 # Zero gradients manually (no optimizer)
                 model.zero_grad()
                 
-                outputs = model(input_ids=input_ids, attention_mask=attention_mask, labels=labels)
-                loss = outputs.loss
+                # Use mixed precision (fp16) to reduce memory
+                with autocast(enabled=torch.cuda.is_available()):
+                    outputs = model(input_ids=input_ids, attention_mask=attention_mask, labels=labels)
+                    loss = outputs.loss
                 
                 loss.backward()
                 
