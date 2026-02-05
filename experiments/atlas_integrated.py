@@ -873,7 +873,34 @@ class ATLASIntegratedTrainer:
         results = {
             'round_metrics': [],
             'final_accuracies': {},
-            'cluster_labels': cluster_labels
+            'cluster_labels': cluster_labels,
+            'phase1_clustering': {
+                'silhouette_score': float(best_combined_score),
+                'davies_bouldin': float(best_db) if 'best_db' in locals() else None,
+                'num_clusters': len(task_clusters),
+                'cluster_assignments': {int(k): [int(x) for x in v] for k, v in task_clusters.items()}
+            },
+            'phase2_rank_allocation': [
+                {
+                    'client_id': int(c.client_id),
+                    'device': str(c.device_type),
+                    'cluster': int(c.cluster_id),
+                    'ranks': [int(r) for r in c.lora_ranks],
+                    'total_params': int(sum(c.lora_ranks)),
+                    'lora_params': int(sum(r * 768 * 2 for r in c.lora_ranks))  # Actual LoRA parameter count
+                }
+                for c in self.clients_data
+            ],
+            'communication_costs': {
+                'per_round': [],  # Will store {round, upload_bytes, download_bytes} per client
+                'total_bytes_uploaded': 0,
+                'total_bytes_downloaded': 0
+            },
+            'time_metrics': {
+                'phase1_time': phase1_time if 'phase1_time' in locals() else 0,
+                'phase2_time': phase2_time if 'phase2_time' in locals() else 0,
+                'per_round': []
+            }
         }
         
         for round_idx in range(start_round, self.config.num_rounds):
@@ -1041,6 +1068,23 @@ class ATLASIntegratedTrainer:
             
             round_time = time.time() - round_start
             
+            # Calculate communication totals for this round
+            round_upload_total = sum(comm_upload.values())
+            round_download_total = sum(comm_download.values())
+            results['communication_costs']['total_bytes_uploaded'] += round_upload_total
+            results['communication_costs']['total_bytes_downloaded'] += round_download_total
+            results['communication_costs']['per_round'].append({
+                'round': round_idx + 1,
+                'upload_bytes': comm_upload,
+                'download_bytes': comm_download,
+                'total_upload': round_upload_total,
+                'total_download': round_download_total
+            })
+            results['time_metrics']['per_round'].append({
+                'round': round_idx + 1,
+                'time_seconds': round_time
+            })
+            
             # Store results
             results['round_metrics'].append({
                 'round': round_idx + 1,
@@ -1048,13 +1092,13 @@ class ATLASIntegratedTrainer:
                 'test_accuracies': round_accuracies,
                 'test_f1': round_f1s,
                 'avg_accuracy': np.mean(list(round_accuracies.values())),
-                'time_seconds': round_time
+                'time_seconds': round_time,
+                'comm_upload_bytes': comm_upload,
+                'comm_download_bytes': comm_download
             })
-            # Attach communication metrics for this round
-            results['round_metrics'][-1]['comm_upload_bytes'] = comm_upload
-            results['round_metrics'][-1]['comm_download_bytes'] = comm_download
             
             print(f"\n[Round {round_idx+1}] Avg accuracy: {np.mean(list(round_accuracies.values())):.4f}, Time: {round_time:.1f}s")
+            print(f"[Round {round_idx+1}] Communication: ↑{round_upload_total/1e6:.2f}MB ↓{round_download_total/1e6:.2f}MB")
             
             # Checkpoint (save every N rounds OR at end of training)
             is_last_round = (round_idx + 1) >= self.config.num_rounds
@@ -1481,6 +1525,10 @@ if __name__ == "__main__":
                 'round_metrics': _to_jsonable(results.get('round_metrics', [])),
                 'final_accuracies': _to_jsonable(results.get('final_accuracies', {})),
                 'cluster_labels': _to_jsonable(results.get('cluster_labels', {})),
+                'phase1_clustering': _to_jsonable(results.get('phase1_clustering', {})),
+                'phase2_rank_allocation': _to_jsonable(results.get('phase2_rank_allocation', [])),
+                'communication_costs': _to_jsonable(results.get('communication_costs', {})),
+                'time_metrics': _to_jsonable(results.get('time_metrics', {})),
                 'fingerprints': _to_jsonable(results.get('fingerprints', {})),
                 'clustering_metrics': _to_jsonable(results.get('clustering_metrics', {})),
                 'device_configs': _to_jsonable(results.get('device_configs', {})),
