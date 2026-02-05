@@ -1382,7 +1382,9 @@ if __name__ == "__main__":
         config.local_epochs = args.local_epochs
     
     # Session-based training: limit rounds for this session
-    max_rounds_this_session = args.max_rounds if args.max_rounds else config.num_rounds
+    if args.max_rounds:
+        config.num_rounds = args.max_rounds
+        print(f"[SESSION] Limiting this session to {args.max_rounds} rounds (use --resume to continue)")
     
     # Lambda sweep mode
     if args.lambda_sweep:
