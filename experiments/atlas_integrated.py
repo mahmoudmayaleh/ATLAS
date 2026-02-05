@@ -1056,8 +1056,11 @@ class ATLASIntegratedTrainer:
             
             print(f"\n[Round {round_idx+1}] Avg accuracy: {np.mean(list(round_accuracies.values())):.4f}, Time: {round_time:.1f}s")
             
-            # Checkpoint (save every N rounds; use max to avoid division by zero)
-            if (round_idx + 1) % max(1, int(self.config.save_every)) == 0:
+            # Checkpoint (save every N rounds OR at end of training)
+            is_last_round = (round_idx + 1) >= self.config.num_rounds
+            should_checkpoint = (round_idx + 1) % max(1, int(self.config.save_every)) == 0 or is_last_round
+            
+            if should_checkpoint:
                 checkpoint_state = {
                     'round': round_idx + 1,
                     'cluster_labels': cluster_labels,
@@ -1455,36 +1458,36 @@ if __name__ == "__main__":
         # Save final results
         results_path = Path("./results") / f"atlas_integrated_{args.mode}_{config.mode}.json"
         results_path.parent.mkdir(parents=True, exist_ok=True)
-    
-    def _to_jsonable(obj):
-        if isinstance(obj, np.ndarray):
-            return obj.tolist()
-        if isinstance(obj, (np.integer, np.floating)):
-            return obj.item()
-        try:
-            import torch
-            if isinstance(obj, torch.Tensor):
-                return obj.detach().cpu().tolist()
-        except Exception:
-            pass
-        if isinstance(obj, dict):
-            return {k: _to_jsonable(v) for k, v in obj.items()}
-        if isinstance(obj, list):
-            return [_to_jsonable(v) for v in obj]
-        return obj
+        
+        def _to_jsonable(obj):
+            if isinstance(obj, np.ndarray):
+                return obj.tolist()
+            if isinstance(obj, (np.integer, np.floating)):
+                return obj.item()
+            try:
+                import torch
+                if isinstance(obj, torch.Tensor):
+                    return obj.detach().cpu().tolist()
+            except Exception:
+                pass
+            if isinstance(obj, dict):
+                return {k: _to_jsonable(v) for k, v in obj.items()}
+            if isinstance(obj, list):
+                return [_to_jsonable(v) for v in obj]
+            return obj
 
-    with open(results_path, 'w') as f:
-        results_json = {
-            'round_metrics': _to_jsonable(results.get('round_metrics', [])),
-            'final_accuracies': _to_jsonable(results.get('final_accuracies', {})),
-            'cluster_labels': _to_jsonable(results.get('cluster_labels', {})),
-            'fingerprints': _to_jsonable(results.get('fingerprints', {})),
-            'clustering_metrics': _to_jsonable(results.get('clustering_metrics', {})),
-            'device_configs': _to_jsonable(results.get('device_configs', {})),
-            'layer_importances': _to_jsonable(results.get('layer_importances', {})),
-            'config': asdict(config)
-        }
-        json.dump(results_json, f, indent=2)
-    
-    print(f"\n[SAVED] Results saved to {results_path}")
-    print("\n[DONE] ATLAS integrated experiment complete!")
+        with open(results_path, 'w') as f:
+            results_json = {
+                'round_metrics': _to_jsonable(results.get('round_metrics', [])),
+                'final_accuracies': _to_jsonable(results.get('final_accuracies', {})),
+                'cluster_labels': _to_jsonable(results.get('cluster_labels', {})),
+                'fingerprints': _to_jsonable(results.get('fingerprints', {})),
+                'clustering_metrics': _to_jsonable(results.get('clustering_metrics', {})),
+                'device_configs': _to_jsonable(results.get('device_configs', {})),
+                'layer_importances': _to_jsonable(results.get('layer_importances', {})),
+                'config': asdict(config)
+            }
+            json.dump(results_json, f, indent=2)
+        
+        print(f"\n[SAVED] Results saved to {results_path}")
+        print("\n[DONE] ATLAS integrated experiment complete!")
