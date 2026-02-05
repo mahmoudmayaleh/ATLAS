@@ -260,13 +260,21 @@ class ATLASIntegratedTrainer:
         
         dataset_name, text_col, text_col2, num_labels = self.dataset_map[task_name]
         
-        # Load dataset
-        if task_name == 'sst2':
-            dataset = load_dataset(dataset_name, split='train')
-            test_dataset = load_dataset(dataset_name, split='validation')
+        # Try loading cleaned datasets first, fallback to HuggingFace
+        cleaned_path = Path(__file__).parent.parent / 'tools' / 'cleaned_data' / task_name
+        if cleaned_path.exists():
+            print(f"  [CLEAN] Loading pre-cleaned {task_name} from disk")
+            from datasets import load_from_disk
+            dataset = load_from_disk(str(cleaned_path / 'train'))
+            test_dataset = load_from_disk(str(cleaned_path / 'validation'))
         else:
-            dataset = load_dataset(dataset_name, task_name, split='train')
-            test_dataset = load_dataset(dataset_name, task_name, split='validation')
+            # Load from HuggingFace (will apply dedup inline)
+            if task_name == 'sst2':
+                dataset = load_dataset(dataset_name, split='train')
+                test_dataset = load_dataset(dataset_name, split='validation')
+            else:
+                dataset = load_dataset(dataset_name, task_name, split='train')
+                test_dataset = load_dataset(dataset_name, task_name, split='validation')
         
         # Deduplicate within splits and remove train↔val overlap
         import hashlib

@@ -1,9 +1,12 @@
 """
 Quick Leak Check: Detect train/val overlaps and duplicates in GLUE datasets
 Run from repository root: python tools/quick_leak_check.py
+Use --cleaned flag to check the cleaned datasets: python tools/quick_leak_check.py --cleaned
 """
 import hashlib
-from datasets import load_dataset
+import sys
+from pathlib import Path
+from datasets import load_dataset, load_from_disk
 
 dataset_map = {
     'sst2': ('stanfordnlp/sst2', 'sentence', None),
@@ -18,15 +21,28 @@ def text_hash(example, text_col, text_col2=None):
         s = example[text_col] or ""
     return hashlib.sha1(s.encode('utf-8')).hexdigest()
 
-def check_task(task):
+def check_task(task, use_cleaned=False):
     dataset_name, c1, c2 = dataset_map[task]
-    # loading same splits as atlas_integrated.py
-    if task == 'sst2':
-        train = load_dataset(dataset_name, split='train')
-        val = load_dataset(dataset_name, split='validation')
-    else:
-        train = load_dataset(dataset_name, task, split='train')
-        val = load_dataset(dataset_name, task, split='validation')
+    
+    if use_cleaned:
+        # Load from cleaned_data/
+        cleaned_path = Path('tools/cleaned_data') / task
+        if cleaned_path.exists():
+            print(f"  [Loading from cleaned_data/{task}/]")
+            train = load_from_disk(str(cleaned_path / 'train'))
+            val = load_from_disk(str(cleaned_path / 'validation'))
+        else:
+            print(f"  [WARNING] Cleaned data not found at {cleaned_path}, using HuggingFace")
+            use_cleaned = False
+    
+    if not use_cleaned:
+        # Load from HuggingFace
+        if task == 'sst2':
+            train = load_dataset(dataset_name, split='train')
+            val = load_dataset(dataset_name, split='validation')
+        else:
+            train = load_dataset(dataset_name, task, split='train')
+            val = load_dataset(dataset_name, task, split='validation')
 
     print(f"\n== {task} ==")
     print(f"train size: {len(train)}, val size: {len(val)}")
@@ -55,15 +71,23 @@ def check_task(task):
     print(f"duplicate examples in train: {dup_train} in val: {dup_val}")
 
 def main():
-    print("QuickLeakCheck: Scanning GLUE datasets for overlaps and duplicates")
+    use_cleaned = '--cleaned' in sys.argv
+    
+    if use_cleaned:
+        print("QuickLeakCheck: Verifying CLEANED datasets (from tools/cleaned_data/)")
+    else:
+        print("QuickLeakCheck: Scanning HuggingFace datasets for overlaps and duplicates")
+        print("(Use --cleaned flag to verify cleaned datasets)")
     print("="*60)
     
     for t in dataset_map:
-        check_task(t)
+        check_task(t, use_cleaned=use_cleaned)
     
     print("\n" + "="*60)
     print("✓ Check complete")
-    print("\nIf overlaps or duplicates found, run: python tools/clean_datasets.py")
+    if not use_cleaned:
+        print("\nIf overlaps or duplicates found, run: python tools/clean_datasets.py")
+        print("Then verify with: python tools/quick_leak_check.py --cleaned")
 
 if __name__ == '__main__':
     main()
