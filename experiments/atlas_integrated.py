@@ -870,16 +870,19 @@ class ATLASIntegratedTrainer:
         print(f"  ✓ Created {len(client_models)} personalized client models")
         
         # Training loop
+        # Use clustering_metrics (returned from Phase 1) when available; fall back to safe defaults
+        phase1_info = {
+            'silhouette_score': float(clustering_metrics.get('silhouette_score', clustering_metrics.get('combined_score', 0.0))) if clustering_metrics else None,
+            'davies_bouldin': float(clustering_metrics.get('davies_bouldin_index', clustering_metrics.get('davies_bouldin', 0.0))) if clustering_metrics else None,
+            'num_clusters': len(task_clusters),
+            'cluster_assignments': {int(k): [int(x) for x in v] for k, v in task_clusters.items()}
+        }
+
         results = {
             'round_metrics': [],
             'final_accuracies': {},
             'cluster_labels': cluster_labels,
-            'phase1_clustering': {
-                'silhouette_score': float(best_combined_score),
-                'davies_bouldin': float(best_db) if 'best_db' in locals() else None,
-                'num_clusters': len(task_clusters),
-                'cluster_assignments': {int(k): [int(x) for x in v] for k, v in task_clusters.items()}
-            },
+            'phase1_clustering': phase1_info,
             'phase2_rank_allocation': [
                 {
                     'client_id': int(c.client_id),
