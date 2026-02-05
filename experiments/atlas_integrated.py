@@ -94,11 +94,11 @@ class ATLASConfig:
     
     # Phase 1: Clustering
     fingerprint_epochs: int = 1  # Reduced to 1 epoch for memory efficiency
-    fingerprint_batches: int = 30  # Reduced to 30 batches (30 samples with batch_size=1)
-    fingerprint_samples: int = 500  # Use only 500 samples for fingerprinting (sufficient for gradient analysis)
+    fingerprint_batches: int = 20  # Only 20 batches (20 samples with batch_size=1)
+    fingerprint_samples: int = 200  # Use only 200 samples for fingerprinting (minimum viable)
     fingerprint_dim: int = 64  # Target PCA dimension
     k_range: Tuple[int, int] = (2, 5)  # Try k=2,3,4,5 clusters
-    # NOTE: For T4 GPU (15GB), fingerprinting uses only 500 samples regardless of max_samples_per_client
+    # NOTE: For T4 GPU (15GB), fingerprinting uses only 200 samples regardless of max_samples_per_client
     
     # Phase 2: LoRA ranks
     rank_candidates: List[int] = None  # [4, 8, 16, 32, 64] - greedy importance-aware
@@ -491,7 +491,16 @@ class ATLASIntegratedTrainer:
         
         # Limit dataset to fingerprint_samples for memory efficiency
         fingerprint_size = min(len(dataset), self.config.fingerprint_samples)
-        fingerprint_subset = Subset(dataset.dataset, list(dataset.indices[:fingerprint_size]))
+        # Safely create subset - handle both Subset and Dataset
+        if hasattr(dataset, 'indices'):
+            # dataset is already a Subset
+            selected_indices = dataset.indices[:fingerprint_size]
+            fingerprint_subset = Subset(dataset.dataset, selected_indices)
+        else:
+            # dataset is a raw Dataset
+            fingerprint_subset = Subset(dataset, list(range(fingerprint_size)))
+        
+        print(f"(using {fingerprint_size} samples)", end=" ")
         
         # Use smaller batch size for memory-intensive fingerprint extraction
         dataloader = DataLoader(fingerprint_subset, batch_size=self.config.fingerprint_batch_size, shuffle=True)
@@ -507,6 +516,10 @@ class ATLASIntegratedTrainer:
             for batch_idx, batch in enumerate(dataloader):
                 if batch_idx >= batch_limit:
                     break
+                
+                # Print progress every 5 batches
+                if batch_idx % 5 == 0:
+                    print(f"[b{batch_idx}]", end="", flush=True)
                 
                 input_ids = batch['input_ids'].to(self.device)
                 attention_mask = batch['attention_mask'].to(self.device)
