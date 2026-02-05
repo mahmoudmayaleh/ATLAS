@@ -84,6 +84,7 @@ class ATLASConfig:
     num_rounds: int = 20  # Increased to 20-30 for MIRA convergence
     local_epochs: int = 2  # Keep moderate (1-2 epochs per round)
     batch_size: int = 16
+    fingerprint_batch_size: int = 4  # Smaller batch size for memory-intensive fingerprint extraction
     max_samples_per_client: int = 2000
     learning_rate: float = 2e-5
     
@@ -92,7 +93,7 @@ class ATLASConfig:
     
     # Phase 1: Clustering
     fingerprint_epochs: int = 2  # Epochs for gradient extraction (2-3 passes)
-    fingerprint_batches: int = 64  # Forward-backward passes per client
+    fingerprint_batches: int = 50  # Reduced from 64 to reduce memory pressure
     fingerprint_dim: int = 64  # Target PCA dimension
     k_range: Tuple[int, int] = (2, 5)  # Try k=2,3,4,5 clusters
     
@@ -477,7 +478,8 @@ class ATLASIntegratedTrainer:
         Returns:
             (averaged_grads, layer_importance): gradient dict and per-layer importance scores
         """
-        dataloader = DataLoader(dataset, batch_size=self.config.batch_size, shuffle=True)
+        # Use smaller batch size for memory-intensive fingerprint extraction
+        dataloader = DataLoader(dataset, batch_size=self.config.fingerprint_batch_size, shuffle=True)
         optimizer = torch.optim.AdamW(model.parameters(), lr=self.config.learning_rate)
         
         model.train()
@@ -539,6 +541,11 @@ class ATLASIntegratedTrainer:
                     grad_history.append(grads_dict)
                 
                 optimizer.step()
+                
+                # Clear memory after each batch to prevent OOM
+                del input_ids, attention_mask, labels, outputs, loss
+                if batch_idx % 10 == 0:  # Clear cache every 10 batches
+                    torch.cuda.empty_cache()
         
         # Extract fingerprint using GradientExtractor
         if grad_history:
