@@ -1,17 +1,17 @@
 # Quick Summary: Real Training for ATLAS
 
-## 🎉 What's New
+## What's New
 
 You now have **REAL PyTorch training** instead of simulation!
 
-## 📁 Files Created
+## Files Created
 
 1. **experiments/real_training.py** - Real training implementation
 2. **colab_training.ipynb** - Ready-to-run Colab notebook
 3. **COLAB_QUICKSTART.md** - Complete usage guide
 4. **REAL_TRAINING_SUMMARY.md** - Detailed documentation
 
-## 🚀 How to Use on Colab T4 GPU (3-4 hours)
+## How to Use on Colab T4 GPU (3-4 hours)
 
 ### Quick Start:
 
@@ -39,18 +39,18 @@ You now have **REAL PyTorch training** instead of simulation!
    - Last cell creates `results.zip`
    - Download from Files panel
 
-## ✅ What You Get
+## What You Get
 
 ### Real Training Features:
 
-- ✅ Loads actual models (DistilBERT, BERT, GPT-2) from HuggingFace
-- ✅ Tokenizes real datasets (GLUE: SST-2, MRPC, CoLA, QNLI)
-- ✅ Real forward passes: `outputs = model(input_ids, labels)`
-- ✅ Real backward passes: `loss.backward()`
-- ✅ Real optimizer updates: `optimizer.step()` with AdamW
-- ✅ GPU training on T4 (80-100% utilization)
-- ✅ Natural training curves (not perfect curves)
-- ✅ Takes realistic time (4-6 minutes per round)
+- Loads actual models (DistilBERT, BERT, GPT-2) from HuggingFace
+- Tokenizes real datasets (GLUE: SST-2, MRPC, CoLA, QNLI)
+- Real forward passes: `outputs = model(input_ids, labels)`
+- Real backward passes: `loss.backward()`
+- Real optimizer updates: `optimizer.step()` with AdamW
+- GPU training on T4 (80-100% utilization)
+- Natural training curves (not perfect curves)
+- Takes realistic time (4-6 minutes per round)
 
 ### Experiments (5 total):
 
@@ -70,7 +70,7 @@ You now have **REAL PyTorch training** instead of simulation!
 - Memory usage analysis
 - Communication cost analysis
 
-## 📊 Expected Results
+## Expected Results
 
 | Experiment  | Final Accuracy | Time   | Memory (GB) |
 | ----------- | -------------- | ------ | ----------- |
@@ -102,7 +102,7 @@ max_samples=200   # Instead of 300
 
 This reduces time to ~1.5 hours.
 
-## 🔧 Troubleshooting
+## Troubleshooting
 
 ### GPU Not Found
 
@@ -123,23 +123,23 @@ This reduces time to ~1.5 hours.
 **Expected:** 4-6 minutes per round
 **If slower:** Verify GPU is being used: run `!nvidia-smi` in notebook
 
-## 📝 For Your Report
+## For Your Report
 
 ### What to Say:
 
-✅ "Implemented complete ATLAS federated learning system"
-✅ "Validated with real training on GLUE benchmark tasks"
-✅ "Trained on real hardware (NVIDIA T4 GPU)"
-✅ "Compared against multiple baselines"
-✅ "Achieved X% accuracy on SST-2 task"
+- "Implemented complete ATLAS federated learning system"
+- "Validated with real training on GLUE benchmark tasks"
+- "Trained on real hardware (NVIDIA T4 GPU)"
+- "Compared against multiple baselines"
+- "Achieved X% accuracy on SST-2 task"
 
 ### What NOT to Say:
 
-❌ "Simulated training"
-❌ "Placeholder results"
-❌ "Mathematical formulas"
+- "Simulated training"
+- "Placeholder results"
+- "Mathematical formulas"
 
-## 🎯 Key Differences from Simulation
+## Key Differences from Simulation
 
 | Aspect    | Before (Simulation) | Now (Real)             |
 | --------- | ------------------- | ---------------------- |

@@ -2,7 +2,7 @@
 
 This directory contains the complete experimental framework for validating and benchmarking the ATLAS federated learning system.
 
-## 📁 Structure
+## Structure
 
 ```
 experiments/
@@ -14,7 +14,7 @@ experiments/
 └── README.md                # This file
 ```
 
-## 🚀 Quick Start
+## Quick Start
 
 ### Run Quick Experiments (Fast validation)
 
@@ -47,7 +47,7 @@ This runs comprehensive experiments:
 python experiments\run_experiments.py --mode single --name sst2_atlas
 ```
 
-## 📊 Experiment Configurations
+## Experiment Configurations
 
 ### Datasets
 
@@ -75,7 +75,7 @@ python experiments\run_experiments.py --mode single --name sst2_atlas
 3. **HSplitLoRA**: Heterogeneous ranks without task clustering
 4. **ATLAS**: Full system (task clustering + heterogeneous + split learning + Laplacian)
 
-## 📈 Metrics Collected
+## Metrics Collected
 
 ### Performance
 
@@ -103,7 +103,7 @@ python experiments\run_experiments.py --mode single --name sst2_atlas
 - Number of task groups
 - Per-client metrics
 
-## 📊 Visualization
+## Visualization
 
 Generate visualizations from experiment results:
 
@@ -132,7 +132,7 @@ viz.create_all_plots()
 - `communication_comparison.png`: Communication breakdown
 - `dashboard.png`: Comprehensive dashboard with all metrics
 
-## 🔬 Python API
+## Python API
 
 ### Run Experiments Programmatically
 

@@ -1,4 +1,4 @@
-# 🎯 Publication-Ready ATLAS: Fixes for MIRA Alignment
+# Publication-Ready ATLAS: Fixes for MIRA Alignment
 
 ## Overview
 
@@ -6,7 +6,7 @@ This document summarizes the three critical fixes implemented to move ATLAS from
 
 ---
 
-## ✅ Fix 1: Singleton Penalty in Clustering
+## Fix 1: Singleton Penalty in Clustering
 
 ### Problem
 
@@ -46,57 +46,7 @@ combined = 0.5 * sil_norm + 0.3 * db_norm + 0.2 * ch_norm - singleton_penalty
 
 ---
 
-## ✅ Fix 2: Per-Layer Rank Variation via Tighter Memory Budget
-
-### Problem
-
-Previous runs assigned **uniform ranks** across layers (e.g., [8,8,8,8,8,8] for 2GB, [64,64,64,64,64,64] for 16GB) despite:
-
-- Computing per-layer importance scores correctly (0.009 to 0.266)
-- Having greedy allocator logic that prioritizes high-importance layers
-
-**Root cause**: Memory budget too permissive → allocator upgrades all layers to max rank simultaneously.
-
-### Solution
-
-Reduced **alpha_opt** from 0.15 to 0.08 in memory budget:
-
-```python
-# experiments/atlas_integrated.py - ATLASConfig
-alpha_opt: float = 0.08  # Reduced from 0.15 to force per-layer variation
-
-# Memory constraint: Σ(2·d·r_ℓ·b) ≤ C_mem·(1 - alpha_base - alpha_act - alpha_opt)
-```
-
-This creates a **tighter constraint**, forcing the greedy allocator to make trade-offs:
-
-- Assign higher ranks to important layers (layer_3, layer_2)
-- Assign lower ranks to less important layers (layer_5, layer_0)
-
-### Expected Impact
-
-Heterogeneous ranks **within** device classes, e.g.:
-
-```
-2GB CPU: [4, 8, 16, 16, 8, 4]   # Focus on middle layers
-8GB Laptop: [16, 32, 64, 64, 32, 16]
-16GB GPU: [32, 64, 128, 128, 64, 32]
-```
-
-This matches **HSplitLoRA** and **MIRA's importance-aware allocation**.
-
-### Verification
-
-```bash
-# Look for heterogeneous ranks in Phase 2 output:
-# Client 0 (cpu_2gb): ranks=[4, 8, 16, 16, 8, 4]
-# Client 3 (laptop_8gb): ranks=[16, 32, 64, 64, 32, 16]
-# Client 6 (gpu_16gb): ranks=[32, 64, 128, 128, 64, 32]
-```
-
----
-
-## ✅ Fix 3: Improved Singleton Connectivity Logging
+## Fix 3: Improved Singleton Connectivity Logging
 
 ### Problem
 
@@ -134,7 +84,7 @@ Clear verification of:
 
 ---
 
-## 🧪 Recommended Next Experiments
+## Recommended Next Experiments
 
 ### 1. **Quick Run with Fixes** (5-10 min)
 
@@ -148,9 +98,9 @@ python experiments/atlas_integrated.py \
 
 **Look for**:
 
-- ✅ k=3 selected (no singletons)
-- ✅ Heterogeneous ranks: [4,8,16,16,8,4] vs [32,64,128,128,64,32]
-- ✅ Clear singleton connectivity logs (if any singletons remain)
+- k=3 selected (no singletons)
+- Heterogeneous ranks: [4,8,16,16,8,4] vs [32,64,128,128,64,32]
+- Clear singleton connectivity logs (if any singletons remain)
 
 ---
 
@@ -219,7 +169,7 @@ python experiments/atlas_integrated.py --ablation atlas
 
 ---
 
-## 📊 Expected Results
+## Expected Results
 
 ### Clustering
 
@@ -252,21 +202,21 @@ MIRA adjacency (mira_rbf):
 
 ---
 
-## 🎓 Alignment with MIRA Paper
+## Alignment with MIRA Paper
 
 | MIRA Component               | ATLAS Implementation                                        | Status      |
-| ---------------------------- | ----------------------------------------------------------- | ----------- | --- | --- |
-| **Task-aware clustering**    | Gradient fingerprints + PCA + KMeans with singleton penalty | ✅          |
-| **Importance-aware LoRA**    | Per-layer gradient norms → greedy rank allocation           | ✅          |
-| **RBF adjacency**            | a\_{k,ℓ} = exp(-α\\                                         | f*k - f*ℓ\\ | ²)  | ✅  |
-| **Block-diagonal graph**     | No cross-cluster edges                                      | ✅          |
-| **Laplacian regularization** | θ*k^{t+1} += η·Σ a*{k,ℓ}(θ_ℓ - θ_k)                         | ✅          |
-| **Lambda tuning**            | CLI flag `--eta` for sweep                                  | ✅          |
-| **Ablation modes**           | local_only, fedavg_cluster, atlas                           | ✅          |
+| ---------------------------- | ----------------------------------------------------------- | ----------- | --- | -------- |
+| **Task-aware clustering**    | Gradient fingerprints + PCA + KMeans with singleton penalty | Complete    |
+| **Importance-aware LoRA**    | Per-layer gradient norms → greedy rank allocation           | Complete    |
+| **RBF adjacency**            | a\_{k,ℓ} = exp(-α\\                                         | f*k - f*ℓ\\ | ²)  | Complete |
+| **Block-diagonal graph**     | No cross-cluster edges                                      | Complete    |
+| **Laplacian regularization** | θ*k^{t+1} += η·Σ a*{k,ℓ}(θ_ℓ - θ_k)                         | Complete    |
+| **Lambda tuning**            | CLI flag `--eta` for sweep                                  | Complete    |
+| **Ablation modes**           | local_only, fedavg_cluster, atlas                           | Complete    |
 
 ---
 
-## 🚀 Quick Start
+## Quick Start
 
 ```bash
 # 1. Test fixes (3 rounds, ~5 min)
@@ -288,7 +238,7 @@ python experiments/visualize.py \
 
 ---
 
-## 📝 Notes
+## Notes
 
 - **Memory budget math**: C_lora = C_mem × (1 - α_base - α_act - α_opt) = 16GB × (1 - 0.5 - 0.25 - 0.08) = 2.72GB for LoRA
 - **Greedy allocator**: Sorts layers by importance, tries ranks [128, 64, 32, 16, 8, 4] descending, picks highest under budget
@@ -296,7 +246,7 @@ python experiments/visualize.py \
 
 ---
 
-## ✅ Commit
+## Commit
 
 All fixes pushed to main:
 

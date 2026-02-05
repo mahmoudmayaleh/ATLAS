@@ -119,9 +119,9 @@ class ATLASConfig:
     lambda_sweep: bool = False  # If True, sweep eta over [0.0, 0.01, 0.1, 0.5, 1.0]
     lambda_values: List[float] = None  # For lambda sweep
     
-    # Checkpointing
+    # Checkpointing (for multi-session training)
     checkpoint_dir: str = "./checkpoints"
-    save_every: int = 5  # Save every N rounds (less frequent for longer runs)
+    save_every: int = 5  # Save every 5 rounds for session resuming
     
     def __post_init__(self):
         if self.tasks is None:
@@ -1214,46 +1214,58 @@ if __name__ == "__main__":
     
     parser = argparse.ArgumentParser(description="Run ATLAS integrated experiment")
     parser.add_argument("--mode", choices=["quick", "full"], default="quick")
-    parser.add_argument("-r", "--rounds", type=int, help="Override number of rounds (quick/full)")
-    parser.add_argument("--resume", type=str, help="Resume from checkpoint")
+    parser.add_argument("-r", "--rounds", type=int, help="Override number of rounds")
+    parser.add_argument("--resume", type=str, help="Resume from checkpoint (path to .pkl file)")
     parser.add_argument("--ablation", choices=["local_only", "fedavg_cluster", "atlas"], default="atlas",
                        help="Ablation mode: local_only, fedavg_cluster (per-cluster FedAvg), or atlas (full pipeline)")
     parser.add_argument("--lambda-sweep", action="store_true",
                        help="Run lambda sweep over [0.0, 0.01, 0.1, 0.5, 1.0]")
     parser.add_argument("--eta", type=float, help="Override Laplacian regularization strength (lambda)")
+    
+    # NEW: Model and task configuration for publication experiments
+    parser.add_argument("--model", type=str, default="distilbert-base-uncased",
+                       help="Model to use: distilbert-base-uncased, bert-base-uncased, roberta-base, gpt2")
+    parser.add_argument("--tasks", type=str, nargs="+", default=['sst2', 'mrpc', 'cola'],
+                       help="Tasks to use (space-separated): sst2 mrpc cola qnli mnli")
+    parser.add_argument("--clients-per-task", type=int, default=3,
+                       help="Number of clients per task")
+    parser.add_argument("--samples", type=int, help="Override max_samples_per_client")
+    parser.add_argument("--local-epochs", type=int, help="Override local_epochs")
+    parser.add_argument("--max-rounds", type=int, help="Maximum rounds for this session (for splitting 30→15+15)")
     args = parser.parse_args()
     
     if args.mode == "quick":
-        # Quick test: 3 tasks, 3 clients per task, 20 rounds (MIRA-aligned)
+        # Quick test: For debugging and validation
         print("[MODE] Quick test (30-45 min on T4 GPU)")
         config = ATLASConfig(
             model_name="distilbert-base-uncased",
-            tasks=['sst2', 'mrpc', 'cola'],  # 3 tasks for non-trivial clustering
-            clients_per_task=3,  # 9 clients total
-            num_rounds=20,  # Increased for MIRA convergence
-            local_epochs=2,  # Moderate local steps
+            tasks=['sst2', 'mrpc', 'cola'],
+            clients_per_task=3,
+            num_rounds=10,  # Quick validation
+            local_epochs=2,
             batch_size=16,
-            max_samples_per_client=1500,  # Increased from 500 for better training
-            fingerprint_epochs=2,  # 2-3 passes for fingerprinting
-            fingerprint_batches=64,  # 64 forward-backward passes
-            mode=args.ablation,  # Set ablation mode
-            save_every=5  # Less frequent checkpointing
-        )
-    else:
-        # Full experiment: 3 tasks, 3 clients per task, 30 rounds
-        print("[MODE] Full experiment (2-3 hours on T4 GPU)")
-        config = ATLASConfig(
-            model_name="distilbert-base-uncased",
-            tasks=['sst2', 'mrpc', 'cola'],  # 3 tasks
-            clients_per_task=3,  # 9 clients total
-            num_rounds=30,  # Sufficient for convergence
-            local_epochs=2,  # Moderate local steps
-            batch_size=16,
-            max_samples_per_client=2000,
+            max_samples_per_client=1000,
             fingerprint_epochs=2,
             fingerprint_batches=64,
             mode=args.ablation,
             save_every=5
+        )
+    else:
+        # Full experiment: Publication-quality parameters
+        print("[MODE] Full experiment (2-4 hours per run on T4 GPU)")
+        print("         For 30+ rounds, split into sessions: 15+15 with --resume")
+        config = ATLASConfig(
+            model_name="distilbert-base-uncased",
+            tasks=['sst2', 'mrpc', 'cola'],
+            clients_per_task=3,
+            num_rounds=30,  # Publication quality
+            local_epochs=3,  # More thorough training
+            batch_size=16,
+            max_samples_per_client=5000,  # Large enough for convergence
+            fingerprint_epochs=3,  # More reliable fingerprints
+            fingerprint_batches=100,
+            mode=args.ablation,
+            save_every=5  # Save every 5 rounds for session breaks
         )
     
     # Override parameters from CLI
@@ -1261,6 +1273,19 @@ if __name__ == "__main__":
         config.num_rounds = int(args.rounds)
     if args.eta is not None:
         config.eta = float(args.eta)
+    if args.model:
+        config.model_name = args.model
+    if args.tasks:
+        config.tasks = args.tasks
+    if args.clients_per_task:
+        config.clients_per_task = args.clients_per_task
+    if args.samples:
+        config.max_samples_per_client = args.samples
+    if args.local_epochs:
+        config.local_epochs = args.local_epochs
+    
+    # Session-based training: limit rounds for this session
+    max_rounds_this_session = args.max_rounds if args.max_rounds else config.num_rounds
     
     # Lambda sweep mode
     if args.lambda_sweep:
