@@ -84,7 +84,7 @@ class ATLASConfig:
     num_rounds: int = 20  # Increased to 20-30 for MIRA convergence
     local_epochs: int = 2  # Keep moderate (1-2 epochs per round)
     batch_size: int = 16
-    fingerprint_batch_size: int = 4  # Smaller batch size for memory-intensive fingerprint extraction
+    fingerprint_batch_size: int = 2  # Very small batch for T4 GPU memory constraints
     max_samples_per_client: int = 2000
     learning_rate: float = 2e-5
     
@@ -96,6 +96,7 @@ class ATLASConfig:
     fingerprint_batches: int = 50  # Reduced from 64 to reduce memory pressure
     fingerprint_dim: int = 64  # Target PCA dimension
     k_range: Tuple[int, int] = (2, 5)  # Try k=2,3,4,5 clusters
+    # NOTE: For T4 GPU (15GB), use max_samples_per_client <= 2000. For 5000+ samples, use A100/V100
     
     # Phase 2: LoRA ranks
     rank_candidates: List[int] = None  # [4, 8, 16, 32, 64] - greedy importance-aware
@@ -478,6 +479,10 @@ class ATLASIntegratedTrainer:
         Returns:
             (averaged_grads, layer_importance): gradient dict and per-layer importance scores
         """
+        # Clear cache before starting
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        
         # Use smaller batch size for memory-intensive fingerprint extraction
         dataloader = DataLoader(dataset, batch_size=self.config.fingerprint_batch_size, shuffle=True)
         optimizer = torch.optim.AdamW(model.parameters(), lr=self.config.learning_rate)
@@ -542,9 +547,9 @@ class ATLASIntegratedTrainer:
                 
                 optimizer.step()
                 
-                # Clear memory after each batch to prevent OOM
-                del input_ids, attention_mask, labels, outputs, loss
-                if batch_idx % 10 == 0:  # Clear cache every 10 batches
+                # Clear memory after EVERY batch to prevent OOM on T4
+                del input_ids, attention_mask, labels, outputs, loss, grads_dict
+                if torch.cuda.is_available():
                     torch.cuda.empty_cache()
         
         # Extract fingerprint using GradientExtractor
