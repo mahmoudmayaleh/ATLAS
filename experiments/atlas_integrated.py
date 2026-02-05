@@ -94,11 +94,11 @@ class ATLASConfig:
     
     # Phase 1: Clustering
     fingerprint_epochs: int = 1  # Reduced to 1 epoch for memory efficiency
-    fingerprint_batches: int = 20  # Only 20 batches (20 samples with batch_size=1)
-    fingerprint_samples: int = 200  # Use only 200 samples for fingerprinting (minimum viable)
+    fingerprint_batches: int = 20  # Only 20 batches total
+    fingerprint_samples: int = 50  # Use only 50 samples (20 batches × 2 batch_size + buffer)
     fingerprint_dim: int = 64  # Target PCA dimension
     k_range: Tuple[int, int] = (2, 5)  # Try k=2,3,4,5 clusters
-    # NOTE: For T4 GPU (15GB), fingerprinting uses only 200 samples regardless of max_samples_per_client
+    # NOTE: For T4 GPU (15GB), fingerprinting uses minimal samples for memory safety
     
     # Phase 2: LoRA ranks
     rank_candidates: List[int] = None  # [4, 8, 16, 32, 64] - greedy importance-aware
@@ -510,16 +510,18 @@ class ATLASIntegratedTrainer:
         grad_history = []
         layer_norms = {}  # Track per-layer gradient norms for importance
         
-        # Train for fingerprint_epochs to collect gradients (2-3 passes)
-        batch_limit = self.config.fingerprint_batches  # Use config value
+        # Train for fingerprint_epochs to collect gradients
+        batch_limit = self.config.fingerprint_batches  # Total batches across all epochs
+        total_batches_processed = 0
+        
         for epoch in range(self.config.fingerprint_epochs):
             for batch_idx, batch in enumerate(dataloader):
-                if batch_idx >= batch_limit:
+                if total_batches_processed >= batch_limit:
                     break
                 
                 # Print progress every 5 batches
-                if batch_idx % 5 == 0:
-                    print(f"[b{batch_idx}]", end="", flush=True)
+                if total_batches_processed % 5 == 0:
+                    print(f"[{total_batches_processed}]", end="", flush=True)
                 
                 input_ids = batch['input_ids'].to(self.device)
                 attention_mask = batch['attention_mask'].to(self.device)
@@ -580,6 +582,12 @@ class ATLASIntegratedTrainer:
                 del input_ids, attention_mask, labels, outputs, loss, grads_dict
                 if torch.cuda.is_available():
                     torch.cuda.empty_cache()
+                
+                total_batches_processed += 1
+            
+            # Break outer loop if limit reached
+            if total_batches_processed >= batch_limit:
+                break
         
         # Extract fingerprint using GradientExtractor
         if grad_history:
