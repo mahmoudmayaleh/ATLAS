@@ -357,8 +357,10 @@ class ATLASIntegratedTrainer:
         # Step 0: Resume or start fresh
         if resume_from:
             checkpoint = self._load_checkpoint(resume_from)
-            start_round = checkpoint['round'] + 1
-            print(f"[RESUME] Continuing from round {start_round}")
+            # checkpoint['round'] stores the number of completed rounds (1-based).
+            # To resume, continue from the next 0-based round index = checkpoint['round']
+            start_round = checkpoint['round']
+            print(f"[RESUME] Continuing from round {start_round + 1}")
         else:
             start_round = 0
             checkpoint = None
