@@ -654,3 +654,21 @@ ROUND 15/15
   Client 8 (cola): acc=0.7719, f1=0.6949, loss=0.7234
 
 [Round 15] Avg accuracy: 0.8062, Time: 609.0s
+
+   client      device  lora_params  per_round  total_15_rounds
+0       0     cpu_2gb        55296     110592          1658880
+1       1     cpu_2gb        55296     110592          1658880
+2       2  tablet_4gb        98304     196608          2949120
+3       3  tablet_4gb        98304     196608          2949120
+4       4  tablet_4gb        98304     196608          2949120
+5       5  laptop_8gb       196608     393216          5898240
+6       6  laptop_8gb       184320     368640          5529600
+7       7    gpu_16gb       368640     737280         11059200
+8       8    gpu_16gb       368640     737280         11059200
+
+Total communication (all clients, 15 rounds): 45.7M params
+
+Comparison:
+  ATLAS avg per client per round: 0.34M
+  Standard FL per client per round: 133.9M
+  Reduction: 99.7%

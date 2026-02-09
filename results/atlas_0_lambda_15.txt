@@ -1,0 +1,686 @@
+[MODE] Full experiment (2-4 hours per run on T4 GPU)
+         For 30+ rounds, split into sessions: 15+15 with --resume
+
+[SETUP] Creating multi-task federated learning setup...
+  Loading task: sst2
+Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+  [DEDUP] Removed 371 duplicates from sst2 train
+Map: 100% 66978/66978 [00:11<00:00, 5977.98 examples/s]
+Map: 100% 872/872 [00:00<00:00, 7351.62 examples/s]
+    Client 0: sst2, cpu_2gb, 5000 samples
+    Client 1: sst2, cpu_2gb, 5000 samples
+    Client 2: sst2, tablet_4gb, 5000 samples
+  Loading task: mrpc
+Map: 100% 3668/3668 [00:00<00:00, 4472.23 examples/s]
+Map: 100% 408/408 [00:00<00:00, 4323.75 examples/s]
+    Client 3: mrpc, tablet_4gb, 1222 samples
+    Client 4: mrpc, tablet_4gb, 1222 samples
+    Client 5: mrpc, laptop_8gb, 1224 samples
+  Loading task: cola
+  [DEDUP] Removing 16 train↔val overlaps from cola
+  [DEDUP] Removed 35 duplicates from cola train
+  [DEDUP] Removed 4 duplicates from cola val
+Map: 100% 8516/8516 [00:01<00:00, 7672.49 examples/s]
+Map: 100% 1039/1039 [00:00<00:00, 8790.50 examples/s]
+    Client 6: cola, laptop_8gb, 2838 samples
+    Client 7: cola, gpu_16gb, 2838 samples
+    Client 8: cola, gpu_16gb, 2840 samples
+  ✓ Created 9 clients across 3 tasks
+
+[ATLAS] Initialized with:
+  Model: distilbert-base-uncased
+  Tasks: ['sst2', 'mrpc', 'cola']
+  Total clients: 9
+  Device types: {'laptop_8gb', 'cpu_2gb', 'tablet_4gb', 'gpu_16gb'}
+  Device: cuda
+
+======================================================================
+ATLAS INTEGRATED EXPERIMENT
+======================================================================
+
+
+======================================================================
+PHASE 1: TASK CLUSTERING
+======================================================================
+
+[Phase 1] Extracting gradient fingerprints...
+  Client 0 (sst2)... (using 50 samples) [0][5][10][15][20][25][30][35][40][45][50][55][60][65][70][75][80][85][90][95]✓ raw grad dict: 36 tensors, total_params=14767874
+  Client 1 (sst2)... (using 50 samples) [0][5][10][15][20][25][30][35][40][45][50][55][60][65][70][75][80][85][90][95]✓ raw grad dict: 36 tensors, total_params=14767874
+  Client 2 (sst2)... (using 50 samples) [0][5][10][15][20][25][30][35][40][45][50][55][60][65][70][75][80][85][90][95]✓ raw grad dict: 36 tensors, total_params=14767874
+  Client 3 (mrpc)... (using 50 samples) [0][5][10][15][20][25][30][35][40][45][50][55][60][65][70][75][80][85][90][95]✓ raw grad dict: 36 tensors, total_params=14767874
+  Client 4 (mrpc)... (using 50 samples) [0][5][10][15][20][25][30][35][40][45][50][55][60][65][70][75][80][85][90][95]✓ raw grad dict: 36 tensors, total_params=14767874
+  Client 5 (mrpc)... (using 50 samples) [0][5][10][15][20][25][30][35][40][45][50][55][60][65][70][75][80][85][90][95]✓ raw grad dict: 36 tensors, total_params=14767874
+  Client 6 (cola)... (using 50 samples) [0][5][10][15][20][25][30][35][40][45][50][55][60][65][70][75][80][85][90][95]✓ raw grad dict: 36 tensors, total_params=14767874
+  Client 7 (cola)... (using 50 samples) [0][5][10][15][20][25][30][35][40][45][50][55][60][65][70][75][80][85][90][95]✓ raw grad dict: 36 tensors, total_params=14767874
+  Client 8 (cola)... (using 50 samples) [0][5][10][15][20][25][30][35][40][45][50][55][60][65][70][75][80][85][90][95]✓ raw grad dict: 36 tensors, total_params=14767874
+
+[Phase 1] Fitting fingerprint PCA on 9 samples...
+PCA fitted: 9 samples, 14767874 features
+Using 9 components (target was 64)
+Explained variance ratio: 1.0000
+Top 3 components explain: 0.4340
+
+[Phase 1] Clustering 9 clients...
+k=2: Combined=0.3513 (Sil=0.036, DB=2.263, Temporal=1.000, Singletons=0)
+k=3: Combined=0.3685 (Sil=0.030, DB=1.707, Temporal=1.000, Singletons=0)
+k=4: Combined=0.3729 (Sil=0.023, DB=1.566, Temporal=1.000, Singletons=0)
+k=5: Combined=0.2439 (Sil=0.025, DB=1.184, Temporal=1.000, Singletons=1)
+
+✓ Best clustering: k=4
+  Combined Score: 0.3729
+  Silhouette: 0.0231
+  Davies-Bouldin: 1.5663
+  Calinski-Harabasz: 1.19
+  Temporal Consistency: 1.0000
+  ✓ Found 4 task groups
+
+[Phase 1] Cluster-Task Alignment Analysis:
+    Cluster 0: 2 clients
+      Tasks: {'sst2': 2} (dominant: sst2, purity: 1.00)
+      Client IDs: [0, 1]
+    Cluster 1: 3 clients
+      Tasks: {'mrpc': 1, 'cola': 2} (dominant: cola, purity: 0.67)
+      Client IDs: [5, 6, 8]
+    Cluster 2: 2 clients
+      Tasks: {'mrpc': 2} (dominant: mrpc, purity: 1.00)
+      Client IDs: [3, 4]
+    Cluster 3: 2 clients
+      Tasks: {'sst2': 1, 'cola': 1} (dominant: sst2, purity: 0.50)
+      Client IDs: [2, 7]
+
+  ✓ Average cluster purity: 0.792
+
+======================================================================
+PHASE 2: HETEROGENEOUS RANK ALLOCATION
+======================================================================
+
+[Phase 2] Profiling devices and allocating ranks...
+
+[Phase 2] Computing cluster-level statistics...
+  Cluster 0: variance=0.0076, norm=1.0000, complexity=0.0076
+  Cluster 1: variance=0.0114, norm=1.0000, complexity=0.0114
+  Cluster 2: variance=0.0081, norm=1.0000, complexity=0.0081
+  Cluster 3: variance=0.0082, norm=1.0000, complexity=0.0082
+
+[Phase 2] Allocating heterogeneous ranks per client...
+
+[Phase 2] Sample importance scores (client 0): {'layer_0': np.float32(0.048206314), 'layer_1': np.float32(0.06427509), 'layer_2': np.float32(0.08034386), 'layer_3': np.float32(0.09641263), 'layer_4': np.float32(0.0067115026), 'layer_5': np.float32(0.00887259), 'classifier': np.float32(0.6951781)}
+  Client 0 (cpu_2gb, cluster 0): ranks=[4, 8, 8, 8, 4, 4], memory=0.2MB, valid=True
+  Client 1 (cpu_2gb, cluster 0): ranks=[4, 8, 8, 8, 4, 4], memory=0.2MB, valid=True
+  Client 2 (tablet_4gb, cluster 3): ranks=[8, 16, 16, 16, 4, 4], memory=0.4MB, valid=True
+  Client 3 (tablet_4gb, cluster 2): ranks=[8, 16, 16, 16, 4, 4], memory=0.4MB, valid=True
+  Client 4 (tablet_4gb, cluster 2): ranks=[8, 16, 16, 16, 4, 4], memory=0.4MB, valid=True
+  Client 5 (laptop_8gb, cluster 1): ranks=[16, 32, 32, 32, 4, 4], memory=0.7MB, valid=True
+  Client 6 (laptop_8gb, cluster 1): ranks=[16, 32, 32, 32, 4, 4], memory=0.7MB, valid=True
+  Client 7 (gpu_16gb, cluster 3): ranks=[32, 64, 64, 64, 8, 8], memory=1.4MB, valid=True
+  Client 8 (gpu_16gb, cluster 1): ranks=[32, 64, 64, 64, 8, 8], memory=1.4MB, valid=True
+
+✓ Phase 2 complete: Allocated heterogeneous ranks for 9 clients
+
+======================================================================
+PHASE 3 & 4: SPLIT FL + LAPLACIAN REGULARIZATION
+======================================================================
+
+[Phase 3&4] Initializing split FL clients and server...
+
+[Phase 4] Building task graph with mira_rbf adjacency...
+  ✓ Computed 12 adjacency weights using mira_rbf
+  Sample weights: [((0, 1), np.float64(1.0)), ((1, 0), np.float64(1.0)), ((5, 6), np.float64(0.46779150633233746)), ((5, 8), np.float64(0.5322084936676625)), ((6, 5), np.float64(0.482072653883919))]
+  ✓ Created 9 personalized client models
+
+======================================================================
+ROUND 1/15
+======================================================================
+
+[Round 1] Local training...
+    Client 0 (sst2): 939 batches, loss=0.4149
+    Client 1 (sst2): 939 batches, loss=0.4049
+    Client 2 (sst2): 939 batches, loss=0.4020
+    Client 3 (mrpc): 231 batches, loss=0.6223
+    Client 4 (mrpc): 231 batches, loss=0.6456
+    Client 5 (mrpc): 231 batches, loss=0.6062
+    Client 6 (cola): 534 batches, loss=0.6338
+    Client 7 (cola): 534 batches, loss=0.5874
+    Client 8 (cola): 534 batches, loss=0.5500
+
+[Round 1] Task-aware aggregation...
+  Group 0: aggregating 2 clients
+  Group 1: aggregating 3 clients
+  Group 2: aggregating 2 clients
+  Group 3: aggregating 2 clients
+
+[Round 1] Applying Laplacian regularization...
+
+[Round 1] Evaluation...
+  Client 0 (sst2): acc=0.8440, f1=0.8439, loss=0.3549
+  Client 1 (sst2): acc=0.8406, f1=0.8406, loss=0.3587
+  Client 2 (sst2): acc=0.8417, f1=0.8417, loss=0.3501
+  Client 3 (mrpc): acc=0.6838, f1=0.4061, loss=0.6039
+  Client 4 (mrpc): acc=0.6838, f1=0.4061, loss=0.6094
+  Client 5 (mrpc): acc=0.6838, f1=0.4061, loss=0.6078
+  Client 6 (cola): acc=0.7007, f1=0.4466, loss=0.5772
+  Client 7 (cola): acc=0.6939, f1=0.4157, loss=0.5831
+  Client 8 (cola): acc=0.6949, f1=0.4190, loss=0.5990
+
+[Round 1] Avg accuracy: 0.7408, Time: 630.5s
+[Round 1] Communication: ↑70.94MB ↓40.70MB
+
+======================================================================
+ROUND 2/15
+======================================================================
+
+[Round 2] Local training...
+    Client 0 (sst2): 939 batches, loss=0.3092
+    Client 1 (sst2): 939 batches, loss=0.3019
+    Client 2 (sst2): 939 batches, loss=0.2963
+    Client 3 (mrpc): 231 batches, loss=0.5944
+    Client 4 (mrpc): 231 batches, loss=0.6196
+    Client 5 (mrpc): 231 batches, loss=0.5825
+    Client 6 (cola): 534 batches, loss=0.5757
+    Client 7 (cola): 534 batches, loss=0.5185
+    Client 8 (cola): 534 batches, loss=0.4685
+
+[Round 2] Task-aware aggregation...
+  Group 0: aggregating 2 clients
+  Group 1: aggregating 3 clients
+  Group 2: aggregating 2 clients
+  Group 3: aggregating 2 clients
+
+[Round 2] Applying Laplacian regularization...
+
+[Round 2] Evaluation...
+  Client 0 (sst2): acc=0.8532, f1=0.8532, loss=0.3218
+  Client 1 (sst2): acc=0.8498, f1=0.8497, loss=0.3404
+  Client 2 (sst2): acc=0.8532, f1=0.8532, loss=0.3258
+  Client 3 (mrpc): acc=0.7157, f1=0.5358, loss=0.5919
+  Client 4 (mrpc): acc=0.6887, f1=0.4226, loss=0.5948
+  Client 5 (mrpc): acc=0.6936, f1=0.4386, loss=0.5903
+  Client 6 (cola): acc=0.7440, f1=0.6252, loss=0.5427
+  Client 7 (cola): acc=0.7517, f1=0.6474, loss=0.5395
+  Client 8 (cola): acc=0.7334, f1=0.5671, loss=0.6192
+
+[Round 2] Avg accuracy: 0.7648, Time: 633.2s
+[Round 2] Communication: ↑70.94MB ↓40.70MB
+
+======================================================================
+ROUND 3/15
+======================================================================
+
+[Round 3] Local training...
+    Client 0 (sst2): 939 batches, loss=0.2846
+    Client 1 (sst2): 939 batches, loss=0.2782
+    Client 2 (sst2): 939 batches, loss=0.2716
+    Client 3 (mrpc): 231 batches, loss=0.5704
+    Client 4 (mrpc): 231 batches, loss=0.5994
+    Client 5 (mrpc): 231 batches, loss=0.5610
+    Client 6 (cola): 534 batches, loss=0.5396
+    Client 7 (cola): 534 batches, loss=0.4751
+    Client 8 (cola): 534 batches, loss=0.4306
+
+[Round 3] Task-aware aggregation...
+  Group 0: aggregating 2 clients
+  Group 1: aggregating 3 clients
+  Group 2: aggregating 2 clients
+  Group 3: aggregating 2 clients
+
+[Round 3] Applying Laplacian regularization...
+
+[Round 3] Evaluation...
+  Client 0 (sst2): acc=0.8716, f1=0.8715, loss=0.3059
+  Client 1 (sst2): acc=0.8555, f1=0.8554, loss=0.3297
+  Client 2 (sst2): acc=0.8612, f1=0.8612, loss=0.3103
+  Client 3 (mrpc): acc=0.7157, f1=0.5448, loss=0.5829
+  Client 4 (mrpc): acc=0.7108, f1=0.5369, loss=0.5799
+  Client 5 (mrpc): acc=0.7034, f1=0.4813, loss=0.5709
+  Client 6 (cola): acc=0.7632, f1=0.6715, loss=0.5337
+  Client 7 (cola): acc=0.7498, f1=0.6336, loss=0.5532
+  Client 8 (cola): acc=0.7536, f1=0.6272, loss=0.6019
+
+[Round 3] Avg accuracy: 0.7761, Time: 632.8s
+[Round 3] Communication: ↑70.94MB ↓40.70MB
+
+======================================================================
+ROUND 4/15
+======================================================================
+
+[Round 4] Local training...
+    Client 0 (sst2): 939 batches, loss=0.2623
+    Client 1 (sst2): 939 batches, loss=0.2585
+    Client 2 (sst2): 939 batches, loss=0.2483
+    Client 3 (mrpc): 231 batches, loss=0.5470
+    Client 4 (mrpc): 231 batches, loss=0.5644
+    Client 5 (mrpc): 231 batches, loss=0.5319
+    Client 6 (cola): 534 batches, loss=0.5137
+    Client 7 (cola): 534 batches, loss=0.4524
+    Client 8 (cola): 534 batches, loss=0.4028
+
+[Round 4] Task-aware aggregation...
+  Group 0: aggregating 2 clients
+  Group 1: aggregating 3 clients
+  Group 2: aggregating 2 clients
+  Group 3: aggregating 2 clients
+
+[Round 4] Applying Laplacian regularization...
+
+[Round 4] Evaluation...
+  Client 0 (sst2): acc=0.8761, f1=0.8760, loss=0.3033
+  Client 1 (sst2): acc=0.8578, f1=0.8578, loss=0.3205
+  Client 2 (sst2): acc=0.8681, f1=0.8681, loss=0.2989
+  Client 3 (mrpc): acc=0.7157, f1=0.5898, loss=0.5714
+  Client 4 (mrpc): acc=0.7108, f1=0.5616, loss=0.5606
+  Client 5 (mrpc): acc=0.7206, f1=0.5295, loss=0.5482
+  Client 6 (cola): acc=0.7661, f1=0.6872, loss=0.5290
+  Client 7 (cola): acc=0.7459, f1=0.6280, loss=0.5586
+  Client 8 (cola): acc=0.7526, f1=0.6337, loss=0.6161
+
+[Round 4] Avg accuracy: 0.7793, Time: 633.0s
+[Round 4] Communication: ↑70.94MB ↓40.70MB
+
+======================================================================
+ROUND 5/15
+======================================================================
+
+[Round 5] Local training...
+    Client 0 (sst2): 939 batches, loss=0.2426
+    Client 1 (sst2): 939 batches, loss=0.2389
+    Client 2 (sst2): 939 batches, loss=0.2330
+    Client 3 (mrpc): 231 batches, loss=0.5286
+    Client 4 (mrpc): 231 batches, loss=0.5322
+    Client 5 (mrpc): 231 batches, loss=0.5061
+    Client 6 (cola): 534 batches, loss=0.4912
+    Client 7 (cola): 534 batches, loss=0.4270
+    Client 8 (cola): 534 batches, loss=0.3818
+
+[Round 5] Task-aware aggregation...
+  Group 0: aggregating 2 clients
+  Group 1: aggregating 3 clients
+  Group 2: aggregating 2 clients
+  Group 3: aggregating 2 clients
+
+[Round 5] Applying Laplacian regularization...
+
+[Round 5] Evaluation...
+  Client 0 (sst2): acc=0.8842, f1=0.8841, loss=0.2914
+  Client 1 (sst2): acc=0.8624, f1=0.8622, loss=0.3217
+  Client 2 (sst2): acc=0.8670, f1=0.8670, loss=0.2974
+  Client 3 (mrpc): acc=0.7255, f1=0.6130, loss=0.5600
+  Client 4 (mrpc): acc=0.7353, f1=0.6348, loss=0.5471
+  Client 5 (mrpc): acc=0.7279, f1=0.5580, loss=0.5338
+  Client 6 (cola): acc=0.7632, f1=0.6829, loss=0.5317
+  Client 7 (cola): acc=0.7623, f1=0.6725, loss=0.5437
+  Client 8 (cola): acc=0.7632, f1=0.6648, loss=0.5857
+
+[Round 5] Avg accuracy: 0.7879, Time: 632.4s
+[Round 5] Communication: ↑70.94MB ↓40.70MB
+[CHECKPOINT] Saved to checkpoints/atlas_round_5.pkl
+
+======================================================================
+ROUND 6/15
+======================================================================
+
+[Round 6] Local training...
+    Client 0 (sst2): 939 batches, loss=0.2286
+    Client 1 (sst2): 939 batches, loss=0.2252
+    Client 2 (sst2): 939 batches, loss=0.2174
+    Client 3 (mrpc): 231 batches, loss=0.5078
+    Client 4 (mrpc): 231 batches, loss=0.5081
+    Client 5 (mrpc): 231 batches, loss=0.4820
+    Client 6 (cola): 534 batches, loss=0.4680
+    Client 7 (cola): 534 batches, loss=0.4071
+    Client 8 (cola): 534 batches, loss=0.3573
+
+[Round 6] Task-aware aggregation...
+  Group 0: aggregating 2 clients
+  Group 1: aggregating 3 clients
+  Group 2: aggregating 2 clients
+  Group 3: aggregating 2 clients
+
+[Round 6] Applying Laplacian regularization...
+
+[Round 6] Evaluation...
+  Client 0 (sst2): acc=0.8819, f1=0.8818, loss=0.2972
+  Client 1 (sst2): acc=0.8647, f1=0.8645, loss=0.3185
+  Client 2 (sst2): acc=0.8670, f1=0.8668, loss=0.2995
+  Client 3 (mrpc): acc=0.7402, f1=0.6580, loss=0.5499
+  Client 4 (mrpc): acc=0.7451, f1=0.6645, loss=0.5365
+  Client 5 (mrpc): acc=0.7353, f1=0.5879, loss=0.5278
+  Client 6 (cola): acc=0.7652, f1=0.6962, loss=0.5314
+  Client 7 (cola): acc=0.7632, f1=0.6734, loss=0.5424
+  Client 8 (cola): acc=0.7632, f1=0.6522, loss=0.6457
+
+[Round 6] Avg accuracy: 0.7917, Time: 632.8s
+[Round 6] Communication: ↑70.94MB ↓40.70MB
+
+======================================================================
+ROUND 7/15
+======================================================================
+
+[Round 7] Local training...
+    Client 0 (sst2): 939 batches, loss=0.2087
+    Client 1 (sst2): 939 batches, loss=0.2080
+    Client 2 (sst2): 939 batches, loss=0.1999
+    Client 3 (mrpc): 231 batches, loss=0.4885
+    Client 4 (mrpc): 231 batches, loss=0.4899
+    Client 5 (mrpc): 231 batches, loss=0.4606
+    Client 6 (cola): 534 batches, loss=0.4452
+    Client 7 (cola): 534 batches, loss=0.3890
+    Client 8 (cola): 534 batches, loss=0.3332
+
+[Round 7] Task-aware aggregation...
+  Group 0: aggregating 2 clients
+  Group 1: aggregating 3 clients
+  Group 2: aggregating 2 clients
+  Group 3: aggregating 2 clients
+
+[Round 7] Applying Laplacian regularization...
+
+[Round 7] Evaluation...
+  Client 0 (sst2): acc=0.8784, f1=0.8783, loss=0.3055
+  Client 1 (sst2): acc=0.8670, f1=0.8667, loss=0.3250
+  Client 2 (sst2): acc=0.8693, f1=0.8693, loss=0.2968
+  Client 3 (mrpc): acc=0.7304, f1=0.6577, loss=0.5408
+  Client 4 (mrpc): acc=0.7426, f1=0.6778, loss=0.5312
+  Client 5 (mrpc): acc=0.7598, f1=0.6613, loss=0.5080
+  Client 6 (cola): acc=0.7632, f1=0.6795, loss=0.5547
+  Client 7 (cola): acc=0.7671, f1=0.6847, loss=0.5524
+  Client 8 (cola): acc=0.7680, f1=0.6692, loss=0.6588
+
+[Round 7] Avg accuracy: 0.7940, Time: 632.1s
+[Round 7] Communication: ↑70.94MB ↓40.70MB
+
+======================================================================
+ROUND 8/15
+======================================================================
+
+[Round 8] Local training...
+    Client 0 (sst2): 939 batches, loss=0.1951
+    Client 1 (sst2): 939 batches, loss=0.1923
+    Client 2 (sst2): 939 batches, loss=0.1847
+    Client 3 (mrpc): 231 batches, loss=0.4713
+    Client 4 (mrpc): 231 batches, loss=0.4664
+    Client 5 (mrpc): 231 batches, loss=0.4419
+    Client 6 (cola): 534 batches, loss=0.4252
+    Client 7 (cola): 534 batches, loss=0.3707
+    Client 8 (cola): 534 batches, loss=0.3187
+
+[Round 8] Task-aware aggregation...
+  Group 0: aggregating 2 clients
+  Group 1: aggregating 3 clients
+  Group 2: aggregating 2 clients
+  Group 3: aggregating 2 clients
+
+[Round 8] Applying Laplacian regularization...
+
+[Round 8] Evaluation...
+  Client 0 (sst2): acc=0.8773, f1=0.8771, loss=0.3078
+  Client 1 (sst2): acc=0.8624, f1=0.8624, loss=0.3233
+  Client 2 (sst2): acc=0.8716, f1=0.8715, loss=0.3018
+  Client 3 (mrpc): acc=0.7328, f1=0.6353, loss=0.5380
+  Client 4 (mrpc): acc=0.7426, f1=0.6723, loss=0.5273
+  Client 5 (mrpc): acc=0.7672, f1=0.6925, loss=0.4906
+  Client 6 (cola): acc=0.7642, f1=0.6939, loss=0.5441
+  Client 7 (cola): acc=0.7719, f1=0.7080, loss=0.5291
+  Client 8 (cola): acc=0.7642, f1=0.6616, loss=0.6595
+
+[Round 8] Avg accuracy: 0.7949, Time: 631.9s
+[Round 8] Communication: ↑70.94MB ↓40.70MB
+
+======================================================================
+ROUND 9/15
+======================================================================
+
+[Round 9] Local training...
+    Client 0 (sst2): 939 batches, loss=0.1790
+    Client 1 (sst2): 939 batches, loss=0.1764
+    Client 2 (sst2): 939 batches, loss=0.1689
+    Client 3 (mrpc): 231 batches, loss=0.4568
+    Client 4 (mrpc): 231 batches, loss=0.4468
+    Client 5 (mrpc): 231 batches, loss=0.4221
+    Client 6 (cola): 534 batches, loss=0.4039
+    Client 7 (cola): 534 batches, loss=0.3465
+    Client 8 (cola): 534 batches, loss=0.3028
+
+[Round 9] Task-aware aggregation...
+  Group 0: aggregating 2 clients
+  Group 1: aggregating 3 clients
+  Group 2: aggregating 2 clients
+  Group 3: aggregating 2 clients
+
+[Round 9] Applying Laplacian regularization...
+
+[Round 9] Evaluation...
+  Client 0 (sst2): acc=0.8796, f1=0.8795, loss=0.3173
+  Client 1 (sst2): acc=0.8750, f1=0.8750, loss=0.3288
+  Client 2 (sst2): acc=0.8681, f1=0.8681, loss=0.3013
+  Client 3 (mrpc): acc=0.7549, f1=0.6870, loss=0.5302
+  Client 4 (mrpc): acc=0.7549, f1=0.6940, loss=0.5237
+  Client 5 (mrpc): acc=0.7696, f1=0.7023, loss=0.4850
+  Client 6 (cola): acc=0.7613, f1=0.6955, loss=0.5494
+  Client 7 (cola): acc=0.7719, f1=0.6987, loss=0.5740
+  Client 8 (cola): acc=0.7623, f1=0.6678, loss=0.6361
+
+[Round 9] Avg accuracy: 0.7997, Time: 632.3s
+[Round 9] Communication: ↑70.94MB ↓40.70MB
+
+======================================================================
+ROUND 10/15
+======================================================================
+
+[Round 10] Local training...
+    Client 0 (sst2): 939 batches, loss=0.1645
+    Client 1 (sst2): 939 batches, loss=0.1600
+    Client 2 (sst2): 939 batches, loss=0.1527
+    Client 3 (mrpc): 231 batches, loss=0.4337
+    Client 4 (mrpc): 231 batches, loss=0.4261
+    Client 5 (mrpc): 231 batches, loss=0.4021
+    Client 6 (cola): 534 batches, loss=0.3848
+    Client 7 (cola): 534 batches, loss=0.3302
+    Client 8 (cola): 534 batches, loss=0.2846
+
+[Round 10] Task-aware aggregation...
+  Group 0: aggregating 2 clients
+  Group 1: aggregating 3 clients
+  Group 2: aggregating 2 clients
+  Group 3: aggregating 2 clients
+
+[Round 10] Applying Laplacian regularization...
+
+[Round 10] Evaluation...
+  Client 0 (sst2): acc=0.8784, f1=0.8782, loss=0.3274
+  Client 1 (sst2): acc=0.8704, f1=0.8703, loss=0.3345
+  Client 2 (sst2): acc=0.8727, f1=0.8725, loss=0.3172
+  Client 3 (mrpc): acc=0.7500, f1=0.6808, loss=0.5281
+  Client 4 (mrpc): acc=0.7623, f1=0.6900, loss=0.5305
+  Client 5 (mrpc): acc=0.7868, f1=0.7269, loss=0.4813
+  Client 6 (cola): acc=0.7661, f1=0.6934, loss=0.5820
+  Client 7 (cola): acc=0.7719, f1=0.6964, loss=0.5721
+  Client 8 (cola): acc=0.7719, f1=0.6900, loss=0.6450
+
+[Round 10] Avg accuracy: 0.8034, Time: 632.5s
+[Round 10] Communication: ↑70.94MB ↓40.70MB
+[CHECKPOINT] Saved to checkpoints/atlas_round_10.pkl
+
+======================================================================
+ROUND 11/15
+======================================================================
+
+[Round 11] Local training...
+    Client 0 (sst2): 939 batches, loss=0.1481
+    Client 1 (sst2): 939 batches, loss=0.1463
+    Client 2 (sst2): 939 batches, loss=0.1416
+    Client 3 (mrpc): 231 batches, loss=0.4208
+    Client 4 (mrpc): 231 batches, loss=0.4103
+    Client 5 (mrpc): 231 batches, loss=0.3812
+    Client 6 (cola): 534 batches, loss=0.3693
+    Client 7 (cola): 534 batches, loss=0.3150
+    Client 8 (cola): 534 batches, loss=0.2686
+
+[Round 11] Task-aware aggregation...
+  Group 0: aggregating 2 clients
+  Group 1: aggregating 3 clients
+  Group 2: aggregating 2 clients
+  Group 3: aggregating 2 clients
+
+[Round 11] Applying Laplacian regularization...
+
+[Round 11] Evaluation...
+  Client 0 (sst2): acc=0.8807, f1=0.8807, loss=0.3261
+  Client 1 (sst2): acc=0.8704, f1=0.8704, loss=0.3441
+  Client 2 (sst2): acc=0.8693, f1=0.8692, loss=0.3328
+  Client 3 (mrpc): acc=0.7500, f1=0.6750, loss=0.5293
+  Client 4 (mrpc): acc=0.7475, f1=0.6967, loss=0.5231
+  Client 5 (mrpc): acc=0.7868, f1=0.7285, loss=0.4816
+  Client 6 (cola): acc=0.7632, f1=0.6900, loss=0.5912
+  Client 7 (cola): acc=0.7700, f1=0.6923, loss=0.6001
+  Client 8 (cola): acc=0.7709, f1=0.6840, loss=0.6754
+
+[Round 11] Avg accuracy: 0.8010, Time: 633.2s
+[Round 11] Communication: ↑70.94MB ↓40.70MB
+
+======================================================================
+ROUND 12/15
+======================================================================
+
+[Round 12] Local training...
+    Client 0 (sst2): 939 batches, loss=0.1388
+    Client 1 (sst2): 939 batches, loss=0.1336
+    Client 2 (sst2): 939 batches, loss=0.1282
+    Client 3 (mrpc): 231 batches, loss=0.3987
+    Client 4 (mrpc): 231 batches, loss=0.3903
+    Client 5 (mrpc): 231 batches, loss=0.3626
+    Client 6 (cola): 534 batches, loss=0.3488
+    Client 7 (cola): 534 batches, loss=0.2976
+    Client 8 (cola): 534 batches, loss=0.2570
+
+[Round 12] Task-aware aggregation...
+  Group 0: aggregating 2 clients
+  Group 1: aggregating 3 clients
+  Group 2: aggregating 2 clients
+  Group 3: aggregating 2 clients
+
+[Round 12] Applying Laplacian regularization...
+
+[Round 12] Evaluation...
+  Client 0 (sst2): acc=0.8819, f1=0.8818, loss=0.3421
+  Client 1 (sst2): acc=0.8670, f1=0.8669, loss=0.3625
+  Client 2 (sst2): acc=0.8693, f1=0.8692, loss=0.3397
+  Client 3 (mrpc): acc=0.7426, f1=0.6760, loss=0.5307
+  Client 4 (mrpc): acc=0.7721, f1=0.7114, loss=0.5271
+  Client 5 (mrpc): acc=0.7917, f1=0.7447, loss=0.4693
+  Client 6 (cola): acc=0.7623, f1=0.6884, loss=0.6178
+  Client 7 (cola): acc=0.7757, f1=0.7060, loss=0.5912
+  Client 8 (cola): acc=0.7690, f1=0.6831, loss=0.6912
+
+[Round 12] Avg accuracy: 0.8035, Time: 632.9s
+[Round 12] Communication: ↑70.94MB ↓40.70MB
+
+======================================================================
+ROUND 13/15
+======================================================================
+
+[Round 13] Local training...
+    Client 0 (sst2): 939 batches, loss=0.1264
+    Client 1 (sst2): 939 batches, loss=0.1201
+    Client 2 (sst2): 939 batches, loss=0.1120
+    Client 3 (mrpc): 231 batches, loss=0.3739
+    Client 4 (mrpc): 231 batches, loss=0.3704
+    Client 5 (mrpc): 231 batches, loss=0.3374
+    Client 6 (cola): 534 batches, loss=0.3357
+    Client 7 (cola): 534 batches, loss=0.2852
+    Client 8 (cola): 534 batches, loss=0.2385
+
+[Round 13] Task-aware aggregation...
+  Group 0: aggregating 2 clients
+  Group 1: aggregating 3 clients
+  Group 2: aggregating 2 clients
+  Group 3: aggregating 2 clients
+
+[Round 13] Applying Laplacian regularization...
+
+[Round 13] Evaluation...
+  Client 0 (sst2): acc=0.8761, f1=0.8760, loss=0.3551
+  Client 1 (sst2): acc=0.8635, f1=0.8633, loss=0.3801
+  Client 2 (sst2): acc=0.8727, f1=0.8726, loss=0.3583
+  Client 3 (mrpc): acc=0.7500, f1=0.6789, loss=0.5369
+  Client 4 (mrpc): acc=0.7672, f1=0.7000, loss=0.5369
+  Client 5 (mrpc): acc=0.7917, f1=0.7420, loss=0.4688
+  Client 6 (cola): acc=0.7642, f1=0.6931, loss=0.6144
+  Client 7 (cola): acc=0.7709, f1=0.7037, loss=0.5883
+  Client 8 (cola): acc=0.7786, f1=0.7027, loss=0.6919
+
+[Round 13] Avg accuracy: 0.8039, Time: 632.7s
+[Round 13] Communication: ↑70.94MB ↓40.70MB
+
+======================================================================
+ROUND 14/15
+======================================================================
+
+[Round 14] Local training...
+    Client 0 (sst2): 939 batches, loss=0.1151
+    Client 1 (sst2): 939 batches, loss=0.1078
+    Client 2 (sst2): 939 batches, loss=0.1064
+    Client 3 (mrpc): 231 batches, loss=0.3554
+    Client 4 (mrpc): 231 batches, loss=0.3463
+    Client 5 (mrpc): 231 batches, loss=0.3172
+    Client 6 (cola): 534 batches, loss=0.3168
+    Client 7 (cola): 534 batches, loss=0.2738
+    Client 8 (cola): 534 batches, loss=0.2294
+
+[Round 14] Task-aware aggregation...
+  Group 0: aggregating 2 clients
+  Group 1: aggregating 3 clients
+  Group 2: aggregating 2 clients
+  Group 3: aggregating 2 clients
+
+[Round 14] Applying Laplacian regularization...
+
+[Round 14] Evaluation...
+  Client 0 (sst2): acc=0.8739, f1=0.8737, loss=0.3754
+  Client 1 (sst2): acc=0.8670, f1=0.8668, loss=0.4053
+  Client 2 (sst2): acc=0.8704, f1=0.8703, loss=0.3814
+  Client 3 (mrpc): acc=0.7549, f1=0.6814, loss=0.5536
+  Client 4 (mrpc): acc=0.7794, f1=0.7132, loss=0.5555
+  Client 5 (mrpc): acc=0.7941, f1=0.7470, loss=0.4659
+  Client 6 (cola): acc=0.7642, f1=0.6901, loss=0.6441
+  Client 7 (cola): acc=0.7690, f1=0.7033, loss=0.6016
+  Client 8 (cola): acc=0.7709, f1=0.6857, loss=0.7291
+
+[Round 14] Avg accuracy: 0.8049, Time: 633.7s
+[Round 14] Communication: ↑70.94MB ↓40.70MB
+
+======================================================================
+ROUND 15/15
+======================================================================
+
+[Round 15] Local training...
+    Client 0 (sst2): 939 batches, loss=0.1151
+    Client 1 (sst2): 939 batches, loss=0.1078
+    Client 2 (sst2): 939 batches, loss=0.1064
+    Client 3 (mrpc): 231 batches, loss=0.3554
+    Client 4 (mrpc): 231 batches, loss=0.3463
+    Client 5 (mrpc): 231 batches, loss=0.3172
+    Client 6 (cola): 534 batches, loss=0.3168
+    Client 7 (cola): 534 batches, loss=0.2738
+    Client 8 (cola): 534 batches, loss=0.2294
+
+[Round 15] Task-aware aggregation...
+  Group 0: aggregating 2 clients
+  Group 1: aggregating 3 clients
+  Group 2: aggregating 2 clients
+  Group 3: aggregating 2 clients
+
+[Round 15] Applying Laplacian regularization...
+
+[Round 15] Evaluation...
+  Client 0 (sst2): acc=0.8739, f1=0.8737, loss=0.3754
+  Client 1 (sst2): acc=0.8680, f1=0.8668, loss=0.4053
+  Client 2 (sst2): acc=0.8704, f1=0.8703, loss=0.3814
+  Client 3 (mrpc): acc=0.7549, f1=0.6814, loss=0.5536
+  Client 4 (mrpc): acc=0.7794, f1=0.7132, loss=0.5555
+  Client 5 (mrpc): acc=0.7961, f1=0.7470, loss=0.4659
+  Client 6 (cola): acc=0.7642, f1=0.6901, loss=0.6441
+  Client 7 (cola): acc=0.7690, f1=0.7033, loss=0.6016
+  Client 8 (cola): acc=0.7709, f1=0.6857, loss=0.7291
+
+[Round 15] Avg accuracy: 0.8059, Time: 633.7s
+[Round 15] Communication: ↑70.94MB ↓40.70MB
