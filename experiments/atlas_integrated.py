@@ -125,7 +125,7 @@ class ATLASConfig:
     
     # Checkpointing (for multi-session training)
     checkpoint_dir: str = "./checkpoints"
-    save_every: int = 5  # Save every 5 rounds for session resuming
+    save_every: int = 999  # Only save final checkpoint (last round)
     
     def __post_init__(self):
         if self.tasks is None:
@@ -1389,15 +1389,29 @@ if __name__ == "__main__":
     parser.add_argument("--samples", type=int, help="Override max_samples_per_client")
     parser.add_argument("--local-epochs", type=int, help="Override local_epochs")
     parser.add_argument("--max-rounds", type=int, help="Maximum rounds for this session (for splitting 30→15+15)")
+    parser.add_argument("--seed", type=int, default=42, help="Random seed for reproducibility")
+    
+    # Hyperparameter tuning (for breaking performance plateau)
+    parser.add_argument("--lr", type=float, help="Override learning rate (default: 2e-5)")
+    parser.add_argument("--batch-size", type=int, help="Override batch size (default: 16)")
     args = parser.parse_args()
+    
+    # Set random seeds for reproducibility
+    import random
+    random.seed(args.seed)
+    np.random.seed(args.seed)
+    torch.manual_seed(args.seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(args.seed)
+    print(f"[SEED] Set random seed to {args.seed} for reproducibility")
     
     if args.mode == "quick":
         # Quick test: For debugging and validation
         print("[MODE] Quick test (30-45 min on T4 GPU)")
         config = ATLASConfig(
-            model_name="distilbert-base-uncased",
-            tasks=['sst2', 'mrpc', 'cola'],
-            clients_per_task=3,
+            model_name=args.model,
+            tasks=args.tasks,
+            clients_per_task=args.clients_per_task,
             num_rounds=10,  # Quick validation
             local_epochs=2,
             batch_size=16,
@@ -1405,16 +1419,16 @@ if __name__ == "__main__":
             fingerprint_epochs=2,
             fingerprint_batches=64,
             mode=args.ablation,
-            save_every=5
+            save_every=999  # Only save final checkpoint
         )
     else:
         # Full experiment: Publication-quality parameters
         print("[MODE] Full experiment (2-4 hours per run on T4 GPU)")
         print("         For 30+ rounds, split into sessions: 15+15 with --resume")
         config = ATLASConfig(
-            model_name="distilbert-base-uncased",
-            tasks=['sst2', 'mrpc', 'cola'],
-            clients_per_task=3,
+            model_name=args.model,
+            tasks=args.tasks,
+            clients_per_task=args.clients_per_task,
             num_rounds=30,  # Publication quality
             local_epochs=3,  # More thorough training
             batch_size=16,
@@ -1422,12 +1436,18 @@ if __name__ == "__main__":
             fingerprint_epochs=3,  # More reliable fingerprints
             fingerprint_batches=100,
             mode=args.ablation,
-            save_every=5  # Save every 5 rounds for session breaks
+            save_every=999  # Only save final checkpoint
         )
     
     # Override parameters from CLI
     if args.rounds is not None:
         config.num_rounds = int(args.rounds)
+    if args.lr is not None:
+        config.learning_rate = args.lr
+        print(f"[OVERRIDE] learning_rate = {args.lr}")
+    if args.batch_size is not None:
+        config.batch_size = args.batch_size
+        print(f"[OVERRIDE] batch_size = {args.batch_size}")
     if args.eta is not None:
         config.eta = float(args.eta)
     if args.model:
