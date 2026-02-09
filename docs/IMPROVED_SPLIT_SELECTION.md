@@ -10,29 +10,36 @@ The improved split selection module (`src/improved_split_selection.py`) has been
 ## Key Features
 
 ### 1. Multi-Factor Scoring
+
 The improved selector evaluates split points based on:
+
 - **Memory constraints** (35% weight): Ensures split fits in client device memory
 - **Communication cost** (30% weight): Minimizes activation transfer size
 - **Layer importance** (25% weight): Keeps important layers on client for personalization
 - **Workload balance** (10% weight): Balances client/server computation
 
 ### 2. Adaptive Selection
+
 - **With device profile**: Uses `ImprovedSplitSelector` for optimal split based on device capabilities
 - **Without device profile**: Falls back to heuristic-based selection (BERT→6, GPT-2→6, LLaMA-7B→16)
 
 ### 3. Task-Specific Optimization
+
 - Supports task-specific split points for heterogeneous multi-task FL
 - Uses gradient fingerprints to compute layer importance per task
 
 ## API Changes
 
 ### `get_split_point(model_name, device_profile=None)`
+
 **Before**:
+
 ```python
 split = get_split_point('distilbert-base-uncased')  # Returns 6 (heuristic)
 ```
 
 **After** (backward compatible):
+
 ```python
 # Heuristic (unchanged behavior)
 split = get_split_point('distilbert-base-uncased')  # Returns 6
@@ -43,7 +50,9 @@ split = get_split_point('distilbert-base-uncased', device_profile)  # Returns op
 ```
 
 ### `SplitClient._compute_split_point()`
+
 Updated to use `ImprovedSplitSelector` when:
+
 1. `IMPROVED_SPLIT_AVAILABLE = True` (import successful)
 2. `device_profile` is provided
 3. No exceptions during selector initialization
@@ -53,6 +62,7 @@ Falls back to legacy method if improved selector unavailable or fails.
 ## Integration Points
 
 ### Files Modified
+
 1. **`src/phase3_split_fl.py`**:
    - Added import for `ImprovedSplitSelector`
    - Updated `_compute_split_point()` method
@@ -62,6 +72,7 @@ Falls back to legacy method if improved selector unavailable or fails.
    - Added `test_get_split_point_with_device_profile()` test
 
 ### Dependent Files (No Changes Required)
+
 - `experiments/atlas_integrated.py`: Uses `SplitClient` (internal logic improved automatically)
 - `experiments/run_experiments.py`: Uses `SplitClient` and `SplitServer` (no API changes)
 - Tests remain backward compatible
@@ -69,6 +80,7 @@ Falls back to legacy method if improved selector unavailable or fails.
 ## Example Usage
 
 ### Basic Usage (Legacy)
+
 ```python
 from src.phase3_split_fl import get_split_point
 
@@ -78,6 +90,7 @@ split = get_split_point('llama-7b')  # 16
 ```
 
 ### Adaptive Usage (New)
+
 ```python
 from src.phase3_split_fl import get_split_point
 
@@ -93,6 +106,7 @@ split = get_split_point('distilbert-base-uncased', device_profile=device_profile
 ```
 
 ### SplitClient Automatic Integration
+
 ```python
 from src.phase3_split_fl import SplitClient
 
@@ -111,12 +125,14 @@ print(f"Computed split: {client.split_layer}")
 ## Validation
 
 ### Import Check
+
 ```bash
 python -c "from src.phase3_split_fl import IMPROVED_SPLIT_AVAILABLE; print(f'Available: {IMPROVED_SPLIT_AVAILABLE}')"
 # Output: Available: True
 ```
 
 ### Split Comparison
+
 ```bash
 python -c "from src.phase3_split_fl import get_split_point; \
 profile = {'memory_mb': 4096}; \
@@ -131,6 +147,7 @@ print(f'Without: {get_split_point(\"distilbert-base-uncased\")}')"
 ```
 
 ### Run Tests
+
 ```bash
 cd c:\Users\Hp\Downloads\Advanced_project\ATLAS
 python -m pytest tests/test_phase3.py::TestUtilityFunctions::test_get_split_point_with_device_profile -v
@@ -139,33 +156,37 @@ python -m pytest tests/test_phase3.py::TestUtilityFunctions::test_get_split_poin
 ## Technical Details
 
 ### Scoring Formula
+
 For each candidate split point `s`:
 
 ```
-total_score = 0.35 * memory_score(s) 
-            + 0.30 * comm_score(s) 
-            + 0.25 * importance_score(s) 
+total_score = 0.35 * memory_score(s)
+            + 0.30 * comm_score(s)
+            + 0.25 * importance_score(s)
             + 0.10 * balance_score(s)
 ```
 
 Where:
+
 - **memory_score**: `exp(-(memory_ratio - 1) * 3)` if over budget, else 1.0
 - **comm_score**: Normalized transfer time penalty + split ratio bonus
 - **importance_score**: Proportion of important layers on client
 - **balance_score**: Distance from 50/50 client/server split
 
 ### Memory Estimation
+
 ```
-total_memory = base_model_memory 
-             + lora_adapter_memory 
+total_memory = base_model_memory
+             + lora_adapter_memory
              + activation_memory
 
 base_model_memory = split * 50 MB/layer
-lora_adapter_memory = split * (2 * hidden_size * rank * bytes_per_param)  
+lora_adapter_memory = split * (2 * hidden_size * rank * bytes_per_param)
 activation_memory = batch_size * seq_len * hidden_size * bytes_per_param
 ```
 
 ### Communication Cost
+
 ```
 activation_size = batch_size * seq_len * hidden_size * bytes_per_param * compression_ratio
 transfer_time = (2 * activation_size * 8) / bandwidth_mbps  # Upload + download
@@ -174,7 +195,9 @@ transfer_time = (2 * activation_size * 8) / bandwidth_mbps  # Upload + download
 ## LLaMA-7B Support
 
 ### Memory Requirements
+
 For LLaMA-7B (32 layers, hidden=4096):
+
 - **Full model**: ~28 GB (fp32) or ~14 GB (fp16)
 - **With optimal split (layer 16)**:
   - Client: ~7 GB (16 layers + LoRA)
@@ -182,6 +205,7 @@ For LLaMA-7B (32 layers, hidden=4096):
 - **LoRA memory** (rank=16): ~4 MB per layer
 
 ### Recommended Device Profiles
+
 ```python
 # Mobile/Edge device
 mobile_profile = {'memory_mb': 2048, 'device_type': 'mobile'}

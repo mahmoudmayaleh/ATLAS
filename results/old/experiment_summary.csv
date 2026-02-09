@@ -1,5 +1,0 @@
-Experiment,Task,Model,LoRA,Rounds,Final Accuracy,Final Loss,Time (min),Avg Memory (MB),Avg Comm (MB)
-Standard FL,SST2,distilbert-base-uncased,No,5,0.8933,0.4539,27.2,3146,1277.1
-LoRA FL,SST2,distilbert-base-uncased,Yes,5,0.8498,0.3388,19.4,3036,1294.0
-Hetero LoRA,MRPC,distilbert-base-uncased,Yes,5,0.7034,0.5820,7.3,3042,1291.2
-ATLAS,COLA,distilbert-base-uncased,Yes,10,0.7546,0.5448,33.1,3889,2070.4
