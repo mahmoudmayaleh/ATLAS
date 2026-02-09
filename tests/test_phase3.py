@@ -404,6 +404,24 @@ class TestUtilityFunctions(unittest.TestCase):
         """Test split point for unknown model"""
         split = get_split_point('unknown-model')
         self.assertEqual(split, 6)  # Default
+    
+    def test_get_split_point_with_device_profile(self):
+        """Test split point with device profile (improved selector)"""
+        device_profile = {
+            'memory_mb': 4096,
+            'device_type': 'tablet_4gb'
+        }
+        
+        # Should use improved selector if available
+        split = get_split_point('distilbert-base-uncased', device_profile=device_profile)
+        
+        # Result should be a valid split point (between 2 and 10 for distilbert)
+        self.assertGreaterEqual(split, 2)
+        self.assertLessEqual(split, 10)
+        
+        # Without device profile, should fall back to heuristic
+        split_heuristic = get_split_point('distilbert-base-uncased')
+        self.assertEqual(split_heuristic, 6)  # BERT-like default
         
     def test_create_message(self):
         """Test message creation"""

@@ -126,6 +126,7 @@ class ATLASConfig:
     # Checkpointing (for multi-session training)
     checkpoint_dir: str = "./checkpoints"
     save_every: int = 999  # Only save final checkpoint (last round)
+    seed: int = 42
     
     def __post_init__(self):
         if self.tasks is None:
@@ -1351,7 +1352,8 @@ class ATLASIntegratedTrainer:
     
     def _save_checkpoint(self, round_num: int, state: Dict):
         """Save checkpoint for resume"""
-        checkpoint_path = Path(self.config.checkpoint_dir) / f"atlas_round_{round_num}.pkl"
+        # Include ablation mode and seed in checkpoint filename to avoid overwriting
+        checkpoint_path = Path(self.config.checkpoint_dir) / f"atlas_{self.config.mode}_seed{self.config.seed}_round_{round_num}.pkl"
         checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
         
         with open(checkpoint_path, 'wb') as f:
@@ -1420,6 +1422,7 @@ if __name__ == "__main__":
             fingerprint_batches=64,
             mode=args.ablation,
             save_every=999  # Only save final checkpoint
+            , seed=args.seed
         )
     else:
         # Full experiment: Publication-quality parameters
@@ -1437,6 +1440,7 @@ if __name__ == "__main__":
             fingerprint_batches=100,
             mode=args.ablation,
             save_every=999  # Only save final checkpoint
+            , seed=args.seed
         )
     
     # Override parameters from CLI
@@ -1491,8 +1495,8 @@ if __name__ == "__main__":
             print(f"\\nLambda={lambda_val}: Avg Acc={sweep_results[lambda_val]['avg_accuracy']:.4f}, "
                   f"Var={sweep_results[lambda_val]['accuracy_variance']:.6f}")
         
-        # Save sweep results
-        results_path = Path("./results") / f"lambda_sweep_{args.mode}_{config.mode}.json"
+        # Save sweep results (include ablation mode and seed to avoid overwrites)
+        results_path = Path("./results") / f"lambda_sweep_{args.mode}_{config.mode}_seed{config.seed}.json"
         results_path.parent.mkdir(parents=True, exist_ok=True)
         
         def _to_jsonable(obj):
@@ -1524,8 +1528,8 @@ if __name__ == "__main__":
 
         results = trainer.run_full_pipeline(resume_from=args.resume)
         
-        # Save final results
-        results_path = Path("./results") / f"atlas_integrated_{args.mode}_{config.mode}.json"
+        # Save final results (include ablation mode and seed to avoid overwrites)
+        results_path = Path("./results") / f"atlas_integrated_{args.mode}_{config.mode}_seed{config.seed}.json"
         results_path.parent.mkdir(parents=True, exist_ok=True)
         
         def _to_jsonable(obj):
