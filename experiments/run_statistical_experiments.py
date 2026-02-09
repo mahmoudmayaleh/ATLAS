@@ -13,7 +13,7 @@ Features:
 - Automatic result aggregation
 
 Usage:
-    python experiments/run_statistical_experiments.py --seeds 5 --configs atlas fedavg_cluster local_only
+    python experiments/run_statistical_experiments.py --seeds 3 --configs atlas fedavg_cluster local_only
 """
 
 import json
@@ -118,8 +118,8 @@ class StatisticalExperimentRunner:
         if 'eta' in self.base_config and config == 'atlas':
             cmd.extend(['--eta', str(self.base_config['eta'])])
         
-        # Result file path
-        result_file = f"results/atlas_integrated_{self.base_config['mode']}_{config}.json"
+        # Result file path (include seed to avoid overwriting other runs)
+        result_file = f"results/atlas_integrated_{self.base_config['mode']}_{config}_seed{seed}.json"
         
         try:
             # Run experiment

@@ -35,6 +35,18 @@ except ImportError:
         PHASE2_AVAILABLE = False
         warnings.warn("Phase 2 not available. Heterogeneous rank allocation disabled.")
 
+# Import improved split selection
+try:
+    from improved_split_selection import ImprovedSplitSelector
+    IMPROVED_SPLIT_AVAILABLE = True
+except ImportError:
+    try:
+        from .improved_split_selection import ImprovedSplitSelector
+        IMPROVED_SPLIT_AVAILABLE = True
+    except ImportError:
+        IMPROVED_SPLIT_AVAILABLE = False
+        warnings.warn("Improved split selector not available. Using legacy split selection.")
+
 
 class LoRAAdapter(nn.Module):
     """
@@ -226,12 +238,9 @@ class SplitClient:
         device_profile: Optional[Dict]
     ) -> int:
         """
-        Compute optimal split point (HSplitLoRA / SplitLoRA style).
+        Compute optimal split point using improved split selector.
         
-        Considers:
-        - Device memory constraints
-        - Communication cost
-        - Model architecture
+        Falls back to legacy heuristic if improved selector unavailable.
         
         Args:
             model_name: Model identifier
@@ -251,11 +260,40 @@ class SplitClient:
         if device_profile is None:
             return get_split_point(model_name)
         
-        # Budget-aware split selection (HSplitLoRA / SplitLoRA)
+        # Use improved split selector if available
+        if IMPROVED_SPLIT_AVAILABLE:
+            try:
+                # Create device profiles dict for selector
+                device_profiles = {self.client_id: device_profile}
+                
+                # Create task assignments (dummy if task_id not set)
+                task_assignments = {self.client_id: f'task_{self.task_id}' if self.task_id is not None else 'task_0'}
+                
+                # Initialize improved selector
+                selector = ImprovedSplitSelector(
+                    model_name=model_name,
+                    device_profiles=device_profiles,
+                    task_assignments=task_assignments,
+                    bandwidth_mbps=10.0,  # Default bandwidth
+                    compression_ratio=1.0  # No compression by default
+                )
+                
+                # Compute optimal split
+                optimal_split = selector.compute_optimal_split(
+                    client_id=self.client_id,
+                    fingerprint_gradients=None  # Could be passed from Phase 1 if available
+                )
+                
+                return optimal_split
+                
+            except Exception as e:
+                warnings.warn(f"Improved split selector failed: {e}. Using legacy method.")
+                # Fall through to legacy method
+        
+        # Legacy budget-aware split selection (HSplitLoRA / SplitLoRA)
         memory_mb = device_profile.get('memory_mb', 2048)
         
         # Try candidate splits in middle third of network
-        # (SplitLoRA: mid-layers capture task features best)
         min_split = max(2, n_layers // 3)
         max_split = min(n_layers - 2, 2 * n_layers // 3)
         
@@ -1095,16 +1133,38 @@ class SplitServer:
         self.task_groups = new_task_groups
 
 
-def get_split_point(model_name: str) -> int:
+def get_split_point(model_name: str, device_profile: Optional[Dict] = None) -> int:
     """
     Determine optimal split point for a model.
     
+    Uses improved split selector if available, otherwise falls back to heuristics.
+    
     Args:
         model_name: HuggingFace model identifier
+        device_profile: Optional device capabilities for adaptive splitting
         
     Returns:
         Layer index to split at
     """
+    # Use improved split selector if available and device_profile provided
+    if IMPROVED_SPLIT_AVAILABLE and device_profile is not None:
+        try:
+            device_profiles = {0: device_profile}
+            task_assignments = {0: 'default_task'}
+            
+            selector = ImprovedSplitSelector(
+                model_name=model_name,
+                device_profiles=device_profiles,
+                task_assignments=task_assignments,
+                bandwidth_mbps=10.0
+            )
+            
+            return selector.compute_optimal_split(client_id=0)
+        except Exception as e:
+            warnings.warn(f"Improved split selector failed: {e}. Using heuristics.")
+            # Fall through to heuristics
+    
+    # Legacy heuristics
     model_name_lower = model_name.lower()
     
     if 'gpt2' in model_name_lower:
