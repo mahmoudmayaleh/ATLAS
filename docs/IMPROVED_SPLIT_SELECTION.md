@@ -1,11 +1,12 @@
 # Improved Split Selection Integration
 
 **Date**: February 9, 2026  
-**Status**: ✅ Integrated into Phase 3
+**Status**: ✅ Fully Integrated (Inlined into Phase 3)  
+**Location**: `src/phase3_split_fl.py` (lines 39-457)
 
 ## Overview
 
-The improved split selection module (`src/improved_split_selection.py`) has been integrated into `src/phase3_split_fl.py` to provide adaptive, device-aware split point selection for federated learning with split models.
+The improved split selection logic has been **fully integrated** into `src/phase3_split_fl.py` as part of Phase 3. The `ImprovedSplitSelector` class is now defined directly in the phase3 module, eliminating the need for a separate file. This provides adaptive, device-aware split point selection for federated learning with split models.
 
 ## Key Features
 
