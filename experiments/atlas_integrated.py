@@ -449,14 +449,12 @@ class ATLASIntegratedTrainer:
                 model.gradient_checkpointing_enable()
                 print("[Gradient checkpointing enabled]", end=" ")
             
-            # Convert classification head to FP32 (critical for numerical stability with FP16 base)
+            # Reinitialize classification head with small weights for stability
             if hasattr(model, 'classifier'):
-                model.classifier = model.classifier.float()
                 torch.nn.init.normal_(model.classifier.weight, mean=0.0, std=0.02)
                 if model.classifier.bias is not None:
                     torch.nn.init.zeros_(model.classifier.bias)
             elif hasattr(model, 'score'):
-                model.score = model.score.float()
                 torch.nn.init.normal_(model.score.weight, mean=0.0, std=0.02)
                 if model.score.bias is not None:
                     torch.nn.init.zeros_(model.score.bias)
@@ -609,9 +607,10 @@ class ATLASIntegratedTrainer:
                 # Zero gradients manually (no optimizer)
                 model.zero_grad(set_to_none=True)
                 
-                # Forward pass (no autocast - use FP32 to match model dtype and avoid OOM)
-                outputs = model(input_ids=input_ids, attention_mask=attention_mask, labels=labels)
-                loss = outputs.loss
+                # Forward pass with autocast for FP16 models
+                with autocast():
+                    outputs = model(input_ids=input_ids, attention_mask=attention_mask, labels=labels)
+                    loss = outputs.loss
                 
                 # Check for NaN before backward
                 if torch.isnan(loss) or torch.isinf(loss):
@@ -906,14 +905,12 @@ class ATLASIntegratedTrainer:
                     ignore_mismatched_sizes=True  # Ignore head size mismatch for LLMs
                 )
             
-            # Convert classification head to FP32 for stability (keep base model FP16)
+            # Reinitialize classification head with small weights for stability
             if hasattr(model, 'classifier'):
-                model.classifier = model.classifier.float()
                 torch.nn.init.normal_(model.classifier.weight, mean=0.0, std=0.02)
                 if model.classifier.bias is not None:
                     torch.nn.init.zeros_(model.classifier.bias)
             elif hasattr(model, 'score'):  # Some models use 'score' instead
-                model.score = model.score.float()
                 torch.nn.init.normal_(model.score.weight, mean=0.0, std=0.02)
                 if model.score.bias is not None:
                     torch.nn.init.zeros_(model.score.bias)
