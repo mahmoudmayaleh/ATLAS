@@ -88,6 +88,7 @@ class ATLASConfig:
     fingerprint_batch_size: int = 1  # Absolute minimum for T4 GPU with large datasets
     max_samples_per_client: int = 2000
     learning_rate: float = 2e-5
+    gradient_clip_norm: float = 1.0  # Clip gradients to prevent explosion (critical for large models)
     
     # Device heterogeneity
     device_types: List[str] = None  # e.g., ['cpu_2gb', 'tablet_4gb', 'laptop_8gb', 'gpu_16gb']
@@ -438,8 +439,20 @@ class ATLASIntegratedTrainer:
             with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
                 model = AutoModelForSequenceClassification.from_pretrained(
                     self.config.model_name,
-                    num_labels=num_labels
+                    num_labels=num_labels,
+                    torch_dtype=torch.float32,
+                    ignore_mismatched_sizes=True
                 ).to(self.device)
+            
+            # Reinitialize classification head for stability
+            if hasattr(model, 'classifier'):
+                torch.nn.init.normal_(model.classifier.weight, mean=0.0, std=0.02)
+                if model.classifier.bias is not None:
+                    torch.nn.init.zeros_(model.classifier.bias)
+            elif hasattr(model, 'score'):
+                torch.nn.init.normal_(model.score.weight, mean=0.0, std=0.02)
+                if model.score.bias is not None:
+                    torch.nn.init.zeros_(model.score.bias)
 
             # Extract raw gradient vector and layer importance
             raw_grad, layer_imp = self._extract_fingerprint(model, client_data.train_dataset)
@@ -874,8 +887,21 @@ class ATLASIntegratedTrainer:
             with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
                 model = AutoModelForSequenceClassification.from_pretrained(
                     self.config.model_name,
-                    num_labels=num_labels
+                    num_labels=num_labels,
+                    torch_dtype=torch.float32,  # Use FP32 to avoid NaN with large models
+                    ignore_mismatched_sizes=True  # Ignore head size mismatch for LLMs
                 )
+            
+            # Reinitialize classification head with smaller std for stability
+            if hasattr(model, 'classifier'):
+                torch.nn.init.normal_(model.classifier.weight, mean=0.0, std=0.02)
+                if model.classifier.bias is not None:
+                    torch.nn.init.zeros_(model.classifier.bias)
+            elif hasattr(model, 'score'):  # Some models use 'score' instead
+                torch.nn.init.normal_(model.score.weight, mean=0.0, std=0.02)
+                if model.score.bias is not None:
+                    torch.nn.init.zeros_(model.score.bias)
+            
             # Apply LoRA with heterogeneous ranks; keep model on CPU to save VRAM
             model = self._apply_heterogeneous_lora(model, client_data.lora_ranks)
             # Ensure model is on CPU (do not call .to(self.device) here)
@@ -1234,6 +1260,7 @@ class ATLASIntegratedTrainer:
         
         total_loss = 0.0
         num_batches = 0
+        nan_detected = False
         
         for epoch in range(self.config.local_epochs):
             for batch in dataloader:
@@ -1244,15 +1271,26 @@ class ATLASIntegratedTrainer:
                 outputs = model(input_ids=input_ids, attention_mask=attention_mask, labels=labels)
                 loss = outputs.loss
                 
+                # Check for NaN loss
+                if torch.isnan(loss) or torch.isinf(loss):
+                    print(f"    ⚠️  Client {client_id}: NaN/Inf loss detected at batch {num_batches}. Skipping batch.")
+                    nan_detected = True
+                    continue
+                
                 optimizer.zero_grad()
                 loss.backward()
+                
+                # Gradient clipping (critical for large models like LLaMA)
+                torch.nn.utils.clip_grad_norm_(model.parameters(), self.config.gradient_clip_norm)
+                
                 optimizer.step()
                 
                 total_loss += loss.item()
                 num_batches += 1
         
         avg_loss = total_loss / max(num_batches, 1)
-        print(f"    Client {client_id} ({task_name}): {num_batches} batches, loss={avg_loss:.4f}")
+        status = "⚠️ NaN detected" if nan_detected else ""
+        print(f"    Client {client_id} ({task_name}): {num_batches} batches, loss={avg_loss:.4f} {status}")
         return avg_loss
     
     def _evaluate_client(self, model: nn.Module, test_dataset) -> Tuple[float, float, float]:
