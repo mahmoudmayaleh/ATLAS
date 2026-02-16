@@ -440,7 +440,7 @@ class ATLASIntegratedTrainer:
                 model = AutoModelForSequenceClassification.from_pretrained(
                     self.config.model_name,
                     num_labels=num_labels,
-                    torch_dtype=torch.float16,  # Use FP16 to save memory (critical for 7B models)
+                    torch_dtype=torch.float32,  # Use FP32 for stability (GPT2-XL fits in 44GB)
                     ignore_mismatched_sizes=True
                 ).to(self.device)
             
@@ -611,10 +611,9 @@ class ATLASIntegratedTrainer:
                 # Zero gradients manually (no optimizer)
                 model.zero_grad(set_to_none=True)
                 
-                # Forward pass with autocast for FP16 models
-                with autocast():
-                    outputs = model(input_ids=input_ids, attention_mask=attention_mask, labels=labels)
-                    loss = outputs.loss
+                # Forward pass (FP32)
+                outputs = model(input_ids=input_ids, attention_mask=attention_mask, labels=labels)
+                loss = outputs.loss
                 
                 # Check for NaN before backward
                 if torch.isnan(loss) or torch.isinf(loss):
@@ -905,7 +904,7 @@ class ATLASIntegratedTrainer:
                 model = AutoModelForSequenceClassification.from_pretrained(
                     self.config.model_name,
                     num_labels=num_labels,
-                    torch_dtype=torch.float16,  # Use FP16 to save memory (critical for 7B models)
+                    torch_dtype=torch.float32,  # Use FP32 for stability (GPT2-XL fits in 44GB)
                     ignore_mismatched_sizes=True  # Ignore head size mismatch for LLMs
                 )
             
@@ -1340,10 +1339,9 @@ class ATLASIntegratedTrainer:
                 
                 optimizer.zero_grad()
                 
-                # Mixed precision forward pass (autocast handles FP16 model)
-                with autocast():
-                    outputs = model(input_ids=input_ids, attention_mask=attention_mask, labels=labels)
-                    loss = outputs.loss
+                # Forward pass (no autocast for FP32)
+                outputs = model(input_ids=input_ids, attention_mask=attention_mask, labels=labels)
+                loss = outputs.loss
                 
                 # Check for NaN loss
                 if torch.isnan(loss) or torch.isinf(loss):
@@ -1386,11 +1384,10 @@ class ATLASIntegratedTrainer:
                 attention_mask = batch['attention_mask'].to(self.device)
                 labels = batch['label'].to(self.device)
                 
-                # Use autocast for eval too (matches training precision)
-                with autocast():
-                    outputs = model(input_ids=input_ids, attention_mask=attention_mask, labels=labels)
-                    loss = outputs.loss
-                    logits = outputs.logits
+                # Forward pass (FP32)
+                outputs = model(input_ids=input_ids, attention_mask=attention_mask, labels=labels)
+                loss = outputs.loss
+                logits = outputs.logits
                 
                 predictions = torch.argmax(logits, dim=-1)
                 total_correct += (predictions == labels).sum().item()
