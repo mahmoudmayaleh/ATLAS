@@ -440,7 +440,7 @@ class ATLASIntegratedTrainer:
                 model = AutoModelForSequenceClassification.from_pretrained(
                     self.config.model_name,
                     num_labels=num_labels,
-                    torch_dtype=torch.float32,
+                    torch_dtype=torch.float16,  # Use FP16 to save memory (critical for 7B models)
                     ignore_mismatched_sizes=True
                 ).to(self.device)
             
@@ -900,7 +900,7 @@ class ATLASIntegratedTrainer:
                 model = AutoModelForSequenceClassification.from_pretrained(
                     self.config.model_name,
                     num_labels=num_labels,
-                    torch_dtype=torch.float32,  # Use FP32 to avoid NaN with large models
+                    torch_dtype=torch.float16,  # Use FP16 to save memory (critical for 7B models)
                     ignore_mismatched_sizes=True  # Ignore head size mismatch for LLMs
                 )
             
