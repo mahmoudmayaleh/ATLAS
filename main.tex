@@ -1,0 +1,312 @@
+\documentclass[conference]{IEEEtran}
+\usepackage{IEEEtrantools}
+\usepackage{amsmath,amssymb}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{cite}
+\usepackage{algorithm}
+\usepackage{algorithmic}
+
+\begin{document}
+
+\title{ATLAS: Adaptive Task-Aware Federated Learning with Heterogeneous LoRA for Edge LLMs}
+
+\author{
+  \IEEEauthorblockN{Mahmoud S. Mayaleh\IEEEauthorrefmark{1},
+  Zakaria Abou El Houda\IEEEauthorrefmark{2},
+  Lyes Khoukhi\IEEEauthorrefmark{1}}
+  \IEEEauthorblockA{\IEEEauthorrefmark{1}Conservatoire national des arts et métiers, Paris, France \\
+  Email: \{mahmoud.mayaleh, lyes.khoukhi\}@lecnam.net}
+  \IEEEauthorblockA{\IEEEauthorrefmark{2}INRS, Quebec, Canada \\
+  Email: zakaria.abouelhouda@inrs.ca}
+}
+
+\maketitle
+
+\begin{abstract}
+Federated learning (FL) enables on-device training of large language models (LLMs) without centralizing data, but practical deployment on heterogeneous edge devices is challenged by task diversity, hardware constraints, and high communication costs. Naive approaches such as task-agnostic FedAvg or uniform-rank LoRA suffer from negative transfer, poor personalization, and inefficient use of memory and bandwidth.
+
+This paper proposes ATLAS, an adaptive, task-aware FL framework for parameter-efficient fine-tuning of transformer-based LLMs on heterogeneous devices. ATLAS integrates four phases: (i) gradient-based task clustering from last-layer fingerprints, (ii) heterogeneous LoRA configuration via importance-aware, budget-proportional rank allocation under explicit memory constraints, (iii) split federated learning that offloads the backbone while aggregating adapters within clusters, and (iv) MIRA-style Laplacian regularization using an RBF kernel graph over gradient fingerprints.
+
+Evaluated on three GLUE tasks (SST-2, MRPC, CoLA) with 12 clients emulating 2--16 ~GB devices, ATLAS outperforms local training and FedAvg baselines in accuracy and personalization while reducing communication compared to full-model FL.
+\end{abstract}
+
+\begin{IEEEkeywords}
+Federated learning, large language models, LoRA, split learning, multi-task learning, and personalization.
+\end{IEEEkeywords}
+
+\section{Introduction}
+\IEEEPARstart{F}{ederated} learning (FL) has emerged as a key paradigm for training and adapting large language models (LLMs) on privacy-sensitive data distributed across edge devices. In this setting, data remain on the device, while models are updated through repeated local training and server-side aggregation. However, practical deployment of FL for transformer-based LLMs on heterogeneous hardware faces three interrelated challenges: diverse tasks across clients, widely varying device capabilities, and stringent communication and memory constraints.
+
+Task-agnostic algorithms such as FedAvg assume that all clients share a single global objective \cite{fedavg}, which can lead to negative transfer when clients solve semantically different tasks, for example, sentiment analysis versus grammatical acceptability. Parameter-efficient fine-tuning methods such as low-rank adaptation (LoRA) reduce memory and compute costs \cite{lora}, but are typically configured with fixed adapter ranks that either exceed the capacity of low-end devices or underutilize high-end hardware. Split learning frameworks mitigate client-side constraints by offloading a portion of the model to a server, yet they often ignore task structure and personalization, and do not adapt adapter capacity to device profiles.
+
+Recent work on task-aware and graph-based FL demonstrates that exploiting task similarity through gradient-based graphs and Laplacian regularization can substantially improve performance in multi-task settings. In parallel, heterogeneous split parameter-efficient tuning methods show that allocating LoRA ranks according to layer importance and memory budgets better matches diverse hardware profiles. Nevertheless, there remains a lack of an end-to-end system that jointly addresses automatic task clustering, memory-constrained heterogeneous LoRA allocation, split federated training for LLMs, and graph-based personalization within a unified framework.
+
+In this paper, we introduce ATLAS, an adaptive, task-aware federated learning framework for parameter-efficient fine-tuning of transformer-based LLMs on heterogeneous edge devices. ATLAS integrates four tightly coupled phases into a single training pipeline: gradient fingerprinting and multi-metric clustering to form coherent task clusters; importance-aware, budget-proportional LoRA rank allocation that respects device memory constraints; split federated learning with per-cluster aggregation using real PyTorch training; and MIRA-inspired Laplacian regularization over an RBF kernel graph constructed from gradient fingerprints to enable graph-based personalization without sharing raw data.
+
+Existing work on federated fine-tuning of LLMs mainly falls into three categories. First, LoRA-based FL frameworks such as FAH-QLoRA~\cite{fah_qlora} reduce memory and communication by training low-rank adapters, sometimes with heterogeneous quantization and ranks, but they typically assume a single global task and do not perform task-aware clustering or graph-based personalization. Second, split and split-federated LLM frameworks such as SplitLoRA~\cite{splitlora}, HSplitLoRA~\cite{hsplitlora}, VFLAIR-LLM~\cite{vflair_llm}, and TITANIC~\cite{titanic} address memory and system constraints via model partitioning and, in some cases, heterogeneous splits and adapter configurations, yet they largely remain task-agnostic. Third, MIRA~\cite{mira} introduces a federated multi-task formulation for LLMs, using a task-similarity graph and Laplacian regularization to improve personalization, but it assumes that each client maintains a full LLM with LoRA and does not consider split learning or device-level memory budgets. To our knowledge, ATLAS is the first framework to jointly combine split learning, heterogeneous LoRA rank allocation, gradient-based task clustering, and MIRA-style Laplacian regularization for multi-task LLM fine-tuning on heterogeneous edge devices.
+
+\section{Problem Formulation}
+\label{sec:problem}
+
+We consider a federated multi-task learning setting with a set of clients
+$\mathcal{K} = \{1,\dots,K\}$. Each client $k \in \mathcal{K}$ holds a private
+dataset $D_k = \{(x_i^{(k)}, y_i^{(k)})\}$ drawn from a task-specific
+distribution associated with task $t_k \in \mathcal{T}$. The tasks
+may correspond to different NLP benchmarks (e.g., sentiment analysis,
+paraphrase detection, grammatical acceptability, natural language inference)
+and are generally heterogeneous.
+
+\subsection{Model and Split Architecture}
+
+We start from a pre-trained transformer-based large language model (LLM)
+with parameters $\theta \in \mathbb{R}^{d}$ and a set of task-specific heads
+$\{h_t\}_{t \in \mathcal{T}}$. The base model is partitioned at a fixed split
+layer into a client-side sub-model $f_{\theta^{\text{c}}}$ and a server-side
+sub-model $g_{\theta^{\text{s}}}$, so that for an input $x$ we obtain
+\begin{equation}
+z = f_{\theta^{\text{c}}}(x), \quad
+u = g_{\theta^{\text{s}}}(z), \quad
+\hat{y} = h_{t_k}(u).
+\end{equation}
+To enable parameter-efficient fine-tuning, we attach low-rank LoRA adapters
+to a subset of transformer layers. For client $k$, we denote the collection
+of its LoRA parameters by $A_k$, which includes per-layer low-rank matrices
+with layer-wise ranks $\{r_{\ell,k}\}_{\ell=1}^{L}$.
+
+\subsection{Federated Multi-Task Objective}
+
+Each client $k$ aims to minimize a task-specific loss function
+$f_k(\theta^{\text{c}}, \theta^{\text{s}}, h_{t_k}, A_k)$ defined as
+\begin{equation}
+f_k(\theta^{\text{c}}, \theta^{\text{s}}, h_{t_k}, A_k)
+= \mathbb{E}_{(x,y) \sim D_k}
+\big[ \ell\big(h_{t_k}(g_{\theta^{\text{s}}}(f_{\theta^{\text{c}}, A_k}(x))), y\big) \big],
+\end{equation}
+where $\ell(\cdot,\cdot)$ is a standard supervised loss (e.g., cross-entropy),
+and $f_{\theta^{\text{c}}, A_k}$ denotes the client-side sub-model with LoRA
+adapters $A_k$ applied to selected layers.
+
+Following the federated multi-task learning (FMTL) paradigm, we do not enforce
+a single global model across all clients. Instead, we allow personalized
+parameters $(A_k, h_{t_k})$ for each client and couple clients through a task
+similarity graph. Let $W = [w_1^\top,\dots,w_K^\top]^\top$ denote the
+concatenation of client models $w_k$ (e.g., the flattened LoRA and head
+parameters for client $k$). The global FMTL objective is
+\begin{equation}
+\min_W J(W) = \sum_{k=1}^{K} f_k(w_k) + \eta R(W),
+\label{eq:fmtl_objective}
+\end{equation}
+where $\eta \ge 0$ controls the strength of regularization and $R(W)$
+is a Laplacian term defined over a task similarity graph.
+
+\subsection{Task Graph and Laplacian Regularization}
+
+We model the relationships among client tasks using a weighted graph
+$G = (\mathcal{K}, \mathcal{E}, A)$, where $A = [a_{k\ell}]$ is the adjacency
+matrix and $a_{k\ell} \ge 0$ quantifies the similarity between clients $k$
+and $\ell$. In ATLAS, these weights are derived from gradient fingerprints
+(see Section~\ref{sec:methodology}), But here we treat them as given.
+
+Let $L = D - A$ be the graph Laplacian, where
+$D = \mathrm{diag}(\delta_1, \dots, \delta_K)$ with
+$\delta_k = \sum_{\ell} a_{k\ell}$. The Laplacian regularizer is
+\begin{equation}
+R(W) = \frac{1}{2} \sum_{k=1}^{K} \sum_{\ell=1}^{K}
+a_{k\ell} \lVert w_k - w_\ell \rVert_2^2
+= W^\top (L \otimes I) W,
+\end{equation}
+which encourages models for similar tasks (large $a_{k\ell}$) to remain close,
+while allowing dissimilar tasks to diverge.
+
+\subsection{Memory and Communication Constraints}
+
+Each client $k$ has a device profile with a memory budget
+$C^{\text{mem}}_k$ and a communication budget $C^{\text{com}}_k$.
+The LoRA configuration must satisfy a per-client adapter memory
+constraint of the form
+\begin{equation}
+\sum_{\ell=1}^{L} 2 d_\ell r_{\ell,k} b_\ell \;\le\; C^{\text{mem}}_k,
+\label{eq:memory_constraint}
+\end{equation}
+where $d_\ell$ is the hidden dimension of layer $\ell$, $r_{\ell,k}$ is the
+LoRA rank for that layer on client $k$, and $b_\ell$ is a factor capturing
+data type and buffering overhead. Similarly, the split architecture and adapter placement determine the size of activations exchanged between
+client and server, which must respect the communication budget $C^{\text{com}}_k$.
+
+The goal of ATLAS is to solve the FMTL problem in \eqref{eq:fmtl_objective} under the device-specific constraints \eqref{eq:memory_constraint} for all $k$, by (i) clustering clients into task-homogeneous groups, (ii) allocating heterogeneous LoRA ranks that respect memory budgets, (iii) training split models with per-cluster aggregation, and (iv) enforcing Laplacian regularization over the task similarity graph.
+
+\section{ATLAS Methodology}
+\label{sec:methodology}
+
+ATLAS implements the federated multi-task objective in
+Section~\ref{sec:problem} through a four-phase pipeline:
+(i) gradient-based task clustering, (ii) heterogeneous LoRA
+rank allocation under device-specific memory budgets,
+(iii) split federated learning with per-cluster aggregation,
+and (iv) MIRA-style Laplacian regularization over a
+task-similarity graph. In this section, we describe each
+phase and its integration into the overall training loop.
+
+\subsection{Phase 1: Gradient-Based Task Clustering}
+\label{subsec:phase1}
+
+The first phase extracts gradient fingerprints for each client
+and clusters clients into task-homogeneous groups. For each
+client $k$, we run a few local mini-batches using the current
+model and collect gradients from the last transformer blocks
+(e.g., the last two encoder layers and the classifier). For a
+given batch index $b$ and layer $\ell$, we denote the gradient
+vector by $g^{(k)}_{\ell,b}$ and form a per-layer aggregate
+gradient
+\begin{equation}
+\bar{g}^{(k)}_{\ell} = \frac{1}{B} \sum_{b=1}^{B} g^{(k)}_{\ell,b},
+\end{equation}
+where $B$ is the number of sampled batches. Each
+$\bar{g}^{(k)}_{\ell}$ is $\ell_2$-normalized before concatenation
+across layers to obtain a raw fingerprint $f_k \in \mathbb{R}^{d_f}$.
+We then apply PCA to reduce dimensionality to a fixed size
+$\tilde{f}_k \in \mathbb{R}^{d_{\text{pca}}}$.
+
+Given the set of fingerprints $\{\tilde{f}_k\}_{k=1}^{K}$, ATLAS
+performs $k$-means clustering for a range of $k$ values
+(e.g., $k \in \{2,\dots,k_{\max}\}$) and selects the best $k$
+using a combined clustering score that includes silhouette,
+Davies--Bouldin, Calinski--Harabasz, and an explicit
+singleton penalty. This yields cluster assignments
+$c_k \in \{1,\dots,K_{\text{clust}}\}$ for all clients.
+
+\begin{algorithm}[t]
+\caption{Phase 1: Gradient Fingerprinting and Task Clustering}
+\label{alg:phase1}
+\begin{algorithmic}[1]
+\REQUIRE Current model parameters, client datasets $\{D_k\}$,
+number of batches $B$, PCA dimension $d_{\text{pca}}$, candidate
+cluster counts $\mathcal{K} = \{2,\dots,k_{\max}\}$
+\FOR{each client $k \in \mathcal{K}$}
+  \STATE Initialize per-layer gradient accumulators
+  \FOR{$b = 1$ to $B$}
+    \STATE Sample mini-batch from $D_k$ and run forward/backward
+    \STATE Accumulate gradients for selected last layers
+  \ENDFOR
+  \STATE Compute per-layer averages and $\ell_2$-normalize
+  \STATE Concatenate layers to obtain raw fingerprint $f_k$
+\ENDFOR
+\STATE Stack $\{f_k\}$ and apply PCA to dimension $d_{\text{pca}}$
+to obtain $\{\tilde{f}_k\}$
+\FOR{each $k \in \mathcal{K}$}
+  \STATE Run $k$-means on $\{\tilde{f}_k\}$ with $k$ clusters
+  \STATE Compute silhouette, Davies--Bouldin, Calinski--Harabasz
+  \STATE Compute singleton count and apply singleton penalty
+  \STATE Record combined score $S(k)$
+\ENDFOR
+\STATE Select $k^\star = \arg\max_{k \in \mathcal{K}} S(k)$
+\STATE Run $k$-means with $k^\star$ to obtain assignments $c_k$
+\RETURN Cluster labels $\{c_k\}$ and fingerprints $\{\tilde{f}_k\}$
+\end{algorithmic}
+\end{algorithm}
+
+This clustering phase is run periodically (e.g., at initialization
+or after a few global rounds) and its outputs are used by both
+the rank allocation (Phase~2) and the Laplacian construction
+(Phase~4).
+
+\subsection{Phase 2: Heterogeneous LoRA Rank Allocation}
+\label{subsec:phase2}
+
+Given cluster assignments $\{c_k\}$ and gradient fingerprints,
+Phase~2 configures heterogeneous LoRA ranks for each client
+under explicit memory budgets. For each transformer layer
+$\ell$, ATLAS computes an importance score based on the
+$\ell_2$-norm of layer gradients aggregated over clients in the
+same cluster, and optionally scales this importance by a
+cluster-level difficulty signal (e.g., within-cluster variance of
+fingerprints).
+
+For a client $k$ with memory budget $C_k^{\text{mem}}$, we
+first determine the largest uniform rank $r^{\text{uni}}_k$ such
+that assigning rank $r^{\text{uni}}_k$ to all $L$ LoRA layers
+satisfies the memory constraint in \eqref{eq:memory_constraint}.
+We then define a total rank budget
+\begin{equation}
+B_k = L \cdot r^{\text{uni}}_k,
+\end{equation}
+and distribute this budget across layers proportionally to
+their normalized importance scores. The resulting target
+per-layer ranks are rounded to a discrete set (e.g.,
+$\{4,8,16,32,64,\dots\}$) and, if necessary, iteratively
+downgraded on the least important layers to ensure that the
+adapter memory remains within $C_k^{\text{mem}}$.
+
+This budget-proportional scheme yields a heterogeneous rank
+vectors $\{r_{\ell,k}\}_{\ell=1}^{L}$ that respect each client’s
+memory constraint, assign higher ranks to more important
+layers, and naturally produce higher-capacity adapters for
+difficult clusters or higher-end devices.
+
+\subsection{Phase 3: Split Federated Learning with Per-Cluster Aggregation}
+\label{subsec:phase3}
+
+Phase~3 runs the main split federated learning loop using
+the split architecture and rank configuration from Phases~1
+and~2. In each global round, the server selects a subset of
+clients and broadcasts the current server-side parameters and
+cluster-specific adapter initialization. For each participating
+client $k$:
+\begin{enumerate}
+  \item The client runs several local epochs of split training:
+        forwards through $f_{\theta^{\text{c}}, A_k}$, sends
+        activations to the server, receives activation gradients,
+        and updates its local LoRA adapters $A_k$.
+  \item At the cluster level, the server aggregates client adapters
+        within the same cluster $c_k$ using a FedAvg-style
+        weighted average, producing a cluster-level adapter
+        for each group.
+\end{enumerate}
+No cross-cluster averaging is performed, ensuring that
+semantically different tasks are not mixed at the parameter
+level. The backbone parameters on the server can either be
+shared across clusters or lightly fine-tuned depending on
+the configuration.
+
+\subsection{Phase 4: MIRA-Style Laplacian Regularization}
+\label{subsec:phase4}
+
+Finally, Phase~4 constructs a MIRA-style task similarity
+graph over clients using their gradient fingerprints and applies
+Laplacian regularization during training. Given fingerprints
+$\{\tilde{f}_k\}$, ATLAS defines adjacency weights
+\begin{equation}
+a_{k\ell} = \exp\big(-\alpha \lVert \tilde{f}_k - \tilde{f}_\ell
+\rVert_2^2 \big),
+\end{equation}
+for a tunable kernel bandwidth $\alpha > 0$, and normalizes
+each row to obtain a stochastic adjacency matrix. This
+yields a Laplacian matrix $L$ as in Section~\ref{sec:problem}
+and a regularization term
+\begin{equation}
+R(W) = \frac{1}{2} \sum_{k,\ell} a_{k\ell}
+\lVert w_k - w_\ell \rVert_2^2.
+\end{equation}
+
+During federated training, after each aggregation step,
+the client-specific parameters $w_k$ (e.g., LoRA and head
+parameters) are updated by an additional Laplacian gradient
+step of the form
+\begin{equation}
+w_k \leftarrow w_k
+ - \eta \sum_{\ell} a_{k\ell} (w_k - w_\ell),
+\end{equation}
+where $\eta$ is the regularization strength from
+\eqref{eq:fmtl_objective}. This step encourages models of
+similar tasks (high $a_{k\ell}$) to align while preserving
+personalization for dissimilar tasks. In practice, ATLAS
+exposes $\eta$ and $\alpha$ as hyperparameters and performs
+a sweep over a small grid to study the trade-off between
+personalization and collaboration.
+
+
+\bibliographystyle{IEEEtran}
+\bibliography{references}
+
+\end{document}

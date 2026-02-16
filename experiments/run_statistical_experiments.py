@@ -124,15 +124,14 @@ class StatisticalExperimentRunner:
         try:
             # Run experiment
             print(f"  Running: {' '.join(cmd[-10:])}")
+            # Run subprocess and stream output to the terminal (avoid pipe buffer deadlocks)
             result = subprocess.run(
                 cmd,
-                capture_output=True,
-                text=True,
                 timeout=7200  # 2 hour timeout
             )
-            
+
             if result.returncode != 0:
-                print(f"  [ERROR] Process failed: {result.stderr[:200]}")
+                print(f"  [ERROR] Process failed with returncode {result.returncode}")
                 return None
             
             # Load results

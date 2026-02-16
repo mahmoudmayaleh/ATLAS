@@ -817,45 +817,56 @@ class ATLASIntegratedTrainer:
         Real training with heterogeneous LoRA + task-aware aggregation + personalization.
         """
         print("[Phase 3&4] Initializing split FL clients and server...")
+
+        mode = getattr(self.config, 'mode', 'atlas')
         
         # Build task graph for Phase 4 (Laplacian)
         task_clusters = {}
         for cluster_id in set(cluster_labels.values()):
             task_clusters[cluster_id] = [cid for cid, label in cluster_labels.items() if label == cluster_id]
         
-        # Build adjacency weights using MIRA's RBF kernel: a_kℓ = exp(-α||f_k - f_ℓ||²)
-        print(f"\n[Phase 4] Building task graph with {self.config.laplacian_adjacency_method} adjacency...")
-        
-        from phase4_laplacian import compute_adjacency_weights
-        
-        adjacency_weights = compute_adjacency_weights(
-            task_clusters=task_clusters,
-            gradient_fingerprints=fingerprints,  # Use Phase 1 fingerprints (dict)
-            method=self.config.laplacian_adjacency_method,  # 'mira_rbf' (recommended)
-            mira_alpha=self.config.mira_alpha,  # RBF bandwidth parameter
-            block_diagonal=self.config.block_diagonal,  # Zero cross-cluster edges
-            ensure_connectivity=self.config.ensure_connectivity  # Connect singletons
-        )
-        
-        print(f"  ✓ Computed {len(adjacency_weights)} adjacency weights using {self.config.laplacian_adjacency_method}")
-        sample_weights = list(adjacency_weights.items())[:5]
-        if sample_weights:
-            print(f"  Sample weights: {sample_weights}")
+        # Phase 4 (Laplacian) is only used for the full ATLAS method.
+        # For baselines, we skip building the task graph and skip Laplacian updates.
+        task_graph = None
+        laplacian_agg = None
+        if mode == 'atlas':
+            # Build adjacency weights using MIRA's RBF kernel: a_kℓ = exp(-α||f_k - f_ℓ||²)
+            print(f"\n[Phase 4] Building task graph with {self.config.laplacian_adjacency_method} adjacency...")
 
-        task_graph = TaskGraph.from_task_clusters(
-            task_clusters=task_clusters,
-            adjacency_weights=adjacency_weights,
-            normalize=True,
-            symmetrize=True
-        )
-        
-        # Initialize Laplacian aggregator with configured eta (λ)
-        laplacian_agg = LaplacianAggregation(
-            eta=self.config.eta,  # Tunable regularization strength
-            heterogeneous_rank=True
-        )
+            from phase4_laplacian import compute_adjacency_weights
+
+            adjacency_weights = compute_adjacency_weights(
+                task_clusters=task_clusters,
+                gradient_fingerprints=fingerprints,  # Use Phase 1 fingerprints (dict)
+                method=self.config.laplacian_adjacency_method,  # 'mira_rbf' (recommended)
+                mira_alpha=self.config.mira_alpha,  # RBF bandwidth parameter
+                block_diagonal=self.config.block_diagonal,  # Zero cross-cluster edges
+                ensure_connectivity=self.config.ensure_connectivity  # Connect singletons
+            )
+
+            print(f"  ✓ Computed {len(adjacency_weights)} adjacency weights using {self.config.laplacian_adjacency_method}")
+            sample_weights = list(adjacency_weights.items())[:5]
+            if sample_weights:
+                print(f"  Sample weights: {sample_weights}")
+
+            task_graph = TaskGraph.from_task_clusters(
+                task_clusters=task_clusters,
+                adjacency_weights=adjacency_weights,
+                normalize=True,
+                symmetrize=True
+            )
+
+            # Initialize Laplacian aggregator with configured eta (λ)
+            laplacian_agg = LaplacianAggregation(
+                eta=self.config.eta,  # Tunable regularization strength
+                heterogeneous_rank=True
+            )
+        else:
+            print(f"\n[Phase 4] Skipped (mode={mode})")
         
         # Create per-client models (MIRA approach: each client keeps own model)
+        # NOTE: to avoid GPU OOM on a single GPU we keep models on CPU and move
+        # a single client model to GPU only while training/evaluating it.
         client_models = {}
         for client_data in self.clients_data:
             _, _, _, num_labels = self.dataset_map[client_data.task_name]
@@ -865,9 +876,10 @@ class ATLASIntegratedTrainer:
                     self.config.model_name,
                     num_labels=num_labels
                 )
-            # Apply LoRA with heterogeneous ranks
+            # Apply LoRA with heterogeneous ranks; keep model on CPU to save VRAM
             model = self._apply_heterogeneous_lora(model, client_data.lora_ranks)
-            model = model.to(self.device)
+            # Ensure model is on CPU (do not call .to(self.device) here)
+            model.to('cpu')
             client_models[client_data.client_id] = model
         
         print(f"  ✓ Created {len(client_models)} personalized client models")
@@ -903,8 +915,8 @@ class ATLASIntegratedTrainer:
                 'total_bytes_downloaded': 0
             },
             'time_metrics': {
-                'phase1_time': phase1_time if 'phase1_time' in locals() else 0,
-                'phase2_time': phase2_time if 'phase2_time' in locals() else 0,
+                'phase1_time': 0,
+                'phase2_time': 0,
                 'per_round': []
             }
         }
@@ -925,7 +937,10 @@ class ATLASIntegratedTrainer:
             for client_data in self.clients_data:
                 cid = client_data.client_id
                 model = client_models[cid]
-                
+
+                # Move model to GPU for local training to save global VRAM
+                model.to(self.device)
+
                 # Train locally
                 loss = self._train_client_local(
                     model, 
@@ -934,128 +949,138 @@ class ATLASIntegratedTrainer:
                     task_name=client_data.task_name
                 )
                 round_losses[cid] = loss
-                # Measure upload size: sum bytes of trainable params (LoRA adapters + classifier)
-                up_bytes = 0
-                for name, param in model.named_parameters():
-                    low = name.lower()
-                    if ('lora' in low) or ('classifier' in low) or ('score' in low):
-                        up_bytes += param.numel() * param.element_size()
-                comm_upload[cid] = int(up_bytes)
-            
-            # Step 2: Task-aware aggregation (within clusters)
-            print(f"\n[Round {round_idx+1}] Task-aware aggregation...")
-            aggregated_models = {}
-            
-            for cluster_id, client_ids in task_clusters.items():
-                print(f"  Group {cluster_id}: aggregating {len(client_ids)} clients")
-                
-                # Collect weights from clients in same cluster
-                cluster_weights = [
-                    {name: param.data.clone() for name, param in client_models[cid].named_parameters()}
-                    for cid in client_ids
-                ]
-                
-                # FedAvg within cluster
-                avg_weights = self._fedavg_aggregate(cluster_weights)
-                
-                # Store for Phase 4 (convert flat state to LoRA-structured dict)
-                lora_struct = self._flat_state_to_lora(avg_weights)
-                for cid in client_ids:
-                    aggregated_models[cid] = lora_struct
 
-            # After aggregation, measure download size per client (server -> clients)
-            for cid in aggregated_models:
-                # aggregated_models[cid] is a dict layer->{'A','B'} tensors
-                total_bytes = 0
-                for layer_name, parts in aggregated_models[cid].items():
-                    for k, t in parts.items():
-                        if isinstance(t, (np.ndarray,)):
-                            total_bytes += t.nbytes
-                        else:
-                            try:
-                                total_bytes += int(t.numel() * t.element_size())
-                            except Exception:
-                                continue
-                comm_download[cid] = int(total_bytes)
-            
-            # Step 3: Laplacian regularization (personalization)
-            print(f"\n[Round {round_idx+1}] Applying Laplacian regularization...")
-            personalized_models = laplacian_agg.laplacian_update(
-                client_models=aggregated_models,
-                task_graph=task_graph
-            )
-            
-            # Update client models: personalized_models is a LoRA-style mapping
-            for cid, lora_weights in personalized_models.items():
-                model = client_models[cid]
-                # Update adapter params in-place from lora_weights (layer -> {'A','B'})
-                state = model.state_dict()
-                new_state = {}
-                import re
-                for key, val in state.items():
-                    key_low = key.lower()
-                    if 'lora_a' in key_low or 'lora_b' in key_low:
-                        # try to infer layer index from key (e.g., '.h.<idx>.')
-                        m = re.search(r"\.h\.(\d+)\.", key)
-                        if m:
-                            layer_idx = int(m.group(1))
-                            layer_name = f'layer_{layer_idx}'
-                        else:
-                            # fallback: look for 'layer_<n>' or use full key
-                            m2 = re.search(r'layer_(\d+)', key_low)
-                            if m2:
-                                layer_name = f"layer_{int(m2.group(1))}"
+                # Move model back to CPU to free GPU memory for next client
+                try:
+                    model.to('cpu')
+                except Exception:
+                    pass
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+                client_models[cid] = model
+
+                # Communication accounting:
+                # - local_only baseline has no server exchange -> 0
+                # - other modes approximate upload as trainable params (LoRA + classifier)
+                if mode == 'local_only':
+                    comm_upload[cid] = 0
+                else:
+                    up_bytes = 0
+                    for name, param in model.named_parameters():
+                        low = name.lower()
+                        if ('lora' in low) or ('classifier' in low) or ('score' in low):
+                            up_bytes += param.numel() * param.element_size()
+                    comm_upload[cid] = int(up_bytes)
+
+            # Baseline: local training only (no aggregation, no Laplacian)
+            if mode == 'local_only':
+                print(f"\n[Round {round_idx+1}] Aggregation skipped (mode=local_only)")
+                print(f"[Round {round_idx+1}] Laplacian skipped (mode=local_only)")
+            else:
+                # Step 2: Task-aware aggregation (within clusters)
+                print(f"\n[Round {round_idx+1}] Task-aware aggregation...")
+                aggregated_models = {}
+
+                for cluster_id, client_ids in task_clusters.items():
+                    print(f"  Group {cluster_id}: aggregating {len(client_ids)} clients")
+
+                    # Collect weights from clients in same cluster
+                    cluster_weights = [
+                        {name: param.data.clone() for name, param in client_models[cid].named_parameters()}
+                        for cid in client_ids
+                    ]
+
+                    # FedAvg within cluster
+                    avg_weights = self._fedavg_aggregate(cluster_weights)
+
+                    # Convert flat state to LoRA-structured dict
+                    lora_struct = self._flat_state_to_lora(avg_weights)
+                    for cid in client_ids:
+                        aggregated_models[cid] = lora_struct
+
+                # Step 3: Optional Laplacian regularization (ATLAS only)
+                if mode == 'atlas':
+                    print(f"\n[Round {round_idx+1}] Applying Laplacian regularization...")
+                    updated_models = laplacian_agg.laplacian_update(
+                        client_models=aggregated_models,
+                        task_graph=task_graph
+                    )
+                else:
+                    # fedavg_cluster baseline: per-cluster FedAvg only
+                    print(f"\n[Round {round_idx+1}] Laplacian skipped (mode={mode})")
+                    updated_models = aggregated_models
+
+                # Measure download size per client (server -> clients) based on weights actually sent
+                for cid in updated_models:
+                    total_bytes = 0
+                    for _layer_name, parts in updated_models[cid].items():
+                        for _k, t in parts.items():
+                            if isinstance(t, (np.ndarray,)):
+                                total_bytes += t.nbytes
                             else:
-                                layer_name = None
+                                try:
+                                    total_bytes += int(t.numel() * t.element_size())
+                                except Exception:
+                                    continue
+                    comm_download[cid] = int(total_bytes)
 
-                        if layer_name and layer_name in lora_weights:
-                            if 'lora_a' in key_low and 'A' in lora_weights[layer_name]:
-                                new_tensor = lora_weights[layer_name]['A']
-                                # match shapes if possible
-                                if new_tensor.shape == val.shape:
-                                    new_state[key] = new_tensor.to(val.device)
+                # Update client models from server-provided LoRA weights
+                for cid, lora_weights in updated_models.items():
+                    model = client_models[cid]
+                    state = model.state_dict()
+                    new_state = {}
+                    import re
+                    for key, val in state.items():
+                        key_low = key.lower()
+                        if 'lora_a' in key_low or 'lora_b' in key_low:
+                            m = re.search(r"\.h\.(\d+)\.", key)
+                            if m:
+                                layer_idx = int(m.group(1))
+                                layer_name = f'layer_{layer_idx}'
+                            else:
+                                m2 = re.search(r'layer_(\d+)', key_low)
+                                if m2:
+                                    layer_name = f"layer_{int(m2.group(1))}"
                                 else:
-                                    # try transpose or truncate/pad
-                                    try:
-                                        cand = new_tensor.to(val.device)
-                                        if cand.shape == val.shape:
-                                            new_state[key] = cand
-                                        else:
-                                            # fallback to original
+                                    layer_name = None
+
+                            if layer_name and layer_name in lora_weights:
+                                if 'lora_a' in key_low and 'A' in lora_weights[layer_name]:
+                                    new_tensor = lora_weights[layer_name]['A']
+                                    if new_tensor.shape == val.shape:
+                                        new_state[key] = new_tensor.to(val.device)
+                                    else:
+                                        try:
+                                            cand = new_tensor.to(val.device)
+                                            new_state[key] = cand if cand.shape == val.shape else val
+                                        except Exception:
                                             new_state[key] = val
-                                    except Exception:
-                                        new_state[key] = val
-                            elif 'lora_b' in key_low and 'B' in lora_weights[layer_name]:
-                                new_tensor = lora_weights[layer_name]['B']
-                                if new_tensor.shape == val.shape:
-                                    new_state[key] = new_tensor.to(val.device)
+                                elif 'lora_b' in key_low and 'B' in lora_weights[layer_name]:
+                                    new_tensor = lora_weights[layer_name]['B']
+                                    if new_tensor.shape == val.shape:
+                                        new_state[key] = new_tensor.to(val.device)
+                                    else:
+                                        try:
+                                            cand = new_tensor.to(val.device)
+                                            new_state[key] = cand if cand.shape == val.shape else val
+                                        except Exception:
+                                            new_state[key] = val
                                 else:
-                                    try:
-                                        cand = new_tensor.to(val.device)
-                                        if cand.shape == val.shape:
-                                            new_state[key] = cand
-                                        else:
-                                            new_state[key] = val
-                                    except Exception:
-                                        new_state[key] = val
+                                    new_state[key] = val
                             else:
                                 new_state[key] = val
                         else:
                             new_state[key] = val
-                    else:
-                        new_state[key] = val
 
-                # Load updated state dict (non-strict to allow missing keys)
-                try:
-                    model.load_state_dict(new_state, strict=False)
-                except Exception:
-                    # Fallback: try partial update via named_parameters
-                    for name, param in model.named_parameters():
-                        if name in new_state:
-                            try:
-                                param.data.copy_(new_state[name])
-                            except Exception:
-                                continue
+                    try:
+                        model.load_state_dict(new_state, strict=False)
+                    except Exception:
+                        for name, param in model.named_parameters():
+                            if name in new_state:
+                                try:
+                                    param.data.copy_(new_state[name])
+                                except Exception:
+                                    continue
             
             # Step 4: Evaluation
             print(f"\n[Round {round_idx+1}] Evaluation...")
@@ -1064,13 +1089,26 @@ class ATLASIntegratedTrainer:
             
             for client_data in self.clients_data:
                 cid = client_data.client_id
+                model = client_models[cid]
+
+                # Move model to GPU for evaluation
+                model.to(self.device)
                 acc, loss, f1 = self._evaluate_client(
-                    client_models[cid],
+                    model,
                     client_data.test_dataset
                 )
                 round_accuracies[cid] = acc
                 round_f1s[cid] = f1
                 print(f"  Client {cid} ({client_data.task_name}): acc={acc:.4f}, f1={f1:.4f}, loss={loss:.4f}")
+
+                # Move model back to CPU after evaluation
+                try:
+                    model.to('cpu')
+                except Exception:
+                    pass
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+                client_models[cid] = model
             
             round_time = time.time() - round_start
             

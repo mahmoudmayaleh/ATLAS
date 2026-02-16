@@ -59,6 +59,14 @@ datasets/
 *.bin
 *.ckpt
 
+# ATLAS run artifacts
+checkpoints/
+*.pkl
+
+# Experiment outputs (generated)
+results/statistical/
+results/atlas_integrated_*.json
+
 # Results (optional, comment out if you want to track results)
 # results/*.json
 # figures/*.png
