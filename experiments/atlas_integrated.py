@@ -87,7 +87,7 @@ class ATLASConfig:
     batch_size: int = 16
     fingerprint_batch_size: int = 1  # Absolute minimum for T4 GPU with large datasets
     max_samples_per_client: int = 2000
-    learning_rate: float = 2e-5
+    learning_rate: float = 5e-6
     gradient_clip_norm: float = 1.0  # Clip gradients to prevent explosion (critical for large models)
     
     # Device heterogeneity
