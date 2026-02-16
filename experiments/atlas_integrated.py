@@ -87,7 +87,7 @@ class ATLASConfig:
     batch_size: int = 16
     fingerprint_batch_size: int = 1  # Absolute minimum for T4 GPU with large datasets
     max_samples_per_client: int = 2000
-    learning_rate: float = 2e-5
+    learning_rate: float = 5e-6
     gradient_clip_norm: float = 1.0  # Clip gradients to prevent explosion (critical for large models)
     
     # Device heterogeneity
@@ -600,12 +600,19 @@ class ATLASIntegratedTrainer:
                 labels = batch['label'].to(self.device)
                 
                 # Zero gradients manually (no optimizer)
-                model.zero_grad()
+                model.zero_grad(set_to_none=True)
                 
-                # Use mixed precision (fp16) to reduce memory
-                with autocast(enabled=torch.cuda.is_available()):
-                    outputs = model(input_ids=input_ids, attention_mask=attention_mask, labels=labels)
-                    loss = outputs.loss
+                # Forward pass (no autocast - use FP32 to match model dtype and avoid OOM)
+                outputs = model(input_ids=input_ids, attention_mask=attention_mask, labels=labels)
+                loss = outputs.loss
+                
+                # Check for NaN before backward
+                if torch.isnan(loss) or torch.isinf(loss):
+                    print(f"⚠️ NaN loss in fingerprint, skipping batch", end="")
+                    del input_ids, attention_mask, labels, outputs, loss
+                    if torch.cuda.is_available():
+                        torch.cuda.empty_cache()
+                    continue
                 
                 loss.backward()
                 
