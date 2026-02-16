@@ -1,0 +1,3 @@
+checkpoints/atlas_atlas_seed456_round_10.pkl
+checkpoints/atlas_atlas_seed42_round_10.pkl
+checkpoints/atlas_atlas_seed123_round_10.pkl

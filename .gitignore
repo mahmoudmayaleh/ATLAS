@@ -74,3 +74,4 @@ results/atlas_integrated_*.json
 # Temporary files
 *.log
 *.tmp
+checkpoints/
