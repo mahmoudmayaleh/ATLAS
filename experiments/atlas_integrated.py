@@ -1479,6 +1479,11 @@ if __name__ == "__main__":
     # Hyperparameter tuning (for breaking performance plateau)
     parser.add_argument("--lr", type=float, help="Override learning rate (default: 2e-5)")
     parser.add_argument("--batch-size", type=int, help="Override batch size (default: 16)")
+    
+    # Fingerprint settings (for large models like LLaMA that need reduced memory)
+    parser.add_argument("--fingerprint-samples", type=int, help="Override fingerprint_samples (default: 50)")
+    parser.add_argument("--fingerprint-batches", type=int, help="Override fingerprint_batches (default: 20)")
+    
     args = parser.parse_args()
     
     # Set random seeds for reproducibility
@@ -1535,6 +1540,12 @@ if __name__ == "__main__":
     if args.batch_size is not None:
         config.batch_size = args.batch_size
         print(f"[OVERRIDE] batch_size = {args.batch_size}")
+    if args.fingerprint_samples is not None:
+        config.fingerprint_samples = args.fingerprint_samples
+        print(f"[OVERRIDE] fingerprint_samples = {args.fingerprint_samples}")
+    if args.fingerprint_batches is not None:
+        config.fingerprint_batches = args.fingerprint_batches
+        print(f"[OVERRIDE] fingerprint_batches = {args.fingerprint_batches}")
     if args.eta is not None:
         config.eta = float(args.eta)
     if args.model:
