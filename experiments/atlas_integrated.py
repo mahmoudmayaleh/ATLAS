@@ -52,7 +52,7 @@ warnings.filterwarnings('ignore')
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader, Subset
-from torch.cuda.amp import autocast
+from torch.cuda.amp import autocast, GradScaler
 from transformers import AutoTokenizer, AutoModelForSequenceClassification
 from datasets import load_dataset
 import numpy as np
@@ -449,12 +449,14 @@ class ATLASIntegratedTrainer:
                 model.gradient_checkpointing_enable()
                 print("[Gradient checkpointing enabled]", end=" ")
             
-            # Reinitialize classification head for stability
+            # Convert classification head to FP32 (critical for numerical stability with FP16 base)
             if hasattr(model, 'classifier'):
+                model.classifier = model.classifier.float()
                 torch.nn.init.normal_(model.classifier.weight, mean=0.0, std=0.02)
                 if model.classifier.bias is not None:
                     torch.nn.init.zeros_(model.classifier.bias)
             elif hasattr(model, 'score'):
+                model.score = model.score.float()
                 torch.nn.init.normal_(model.score.weight, mean=0.0, std=0.02)
                 if model.score.bias is not None:
                     torch.nn.init.zeros_(model.score.bias)
@@ -904,12 +906,14 @@ class ATLASIntegratedTrainer:
                     ignore_mismatched_sizes=True  # Ignore head size mismatch for LLMs
                 )
             
-            # Reinitialize classification head with smaller std for stability
+            # Convert classification head to FP32 for stability (keep base model FP16)
             if hasattr(model, 'classifier'):
+                model.classifier = model.classifier.float()
                 torch.nn.init.normal_(model.classifier.weight, mean=0.0, std=0.02)
                 if model.classifier.bias is not None:
                     torch.nn.init.zeros_(model.classifier.bias)
             elif hasattr(model, 'score'):  # Some models use 'score' instead
+                model.score = model.score.float()
                 torch.nn.init.normal_(model.score.weight, mean=0.0, std=0.02)
                 if model.score.bias is not None:
                     torch.nn.init.zeros_(model.score.bias)
@@ -1273,6 +1277,7 @@ class ATLASIntegratedTrainer:
         model.train()
         dataloader = DataLoader(dataset, batch_size=self.config.batch_size, shuffle=True)
         optimizer = torch.optim.AdamW(model.parameters(), lr=self.config.learning_rate)
+        scaler = GradScaler()  # For FP16 mixed precision training
         
         total_loss = 0.0
         num_batches = 0
@@ -1284,8 +1289,12 @@ class ATLASIntegratedTrainer:
                 attention_mask = batch['attention_mask'].to(self.device)
                 labels = batch['label'].to(self.device)
                 
-                outputs = model(input_ids=input_ids, attention_mask=attention_mask, labels=labels)
-                loss = outputs.loss
+                optimizer.zero_grad()
+                
+                # Mixed precision forward pass
+                with autocast():
+                    outputs = model(input_ids=input_ids, attention_mask=attention_mask, labels=labels)
+                    loss = outputs.loss
                 
                 # Check for NaN loss
                 if torch.isnan(loss) or torch.isinf(loss):
@@ -1293,13 +1302,16 @@ class ATLASIntegratedTrainer:
                     nan_detected = True
                     continue
                 
-                optimizer.zero_grad()
-                loss.backward()
+                # Scaled backward pass (for FP16 stability)
+                scaler.scale(loss).backward()
                 
-                # Gradient clipping (critical for large models like LLaMA)
+                # Unscale before gradient clipping
+                scaler.unscale_(optimizer)
                 torch.nn.utils.clip_grad_norm_(model.parameters(), self.config.gradient_clip_norm)
                 
-                optimizer.step()
+                # Optimizer step with scaler
+                scaler.step(optimizer)
+                scaler.update()
                 
                 total_loss += loss.item()
                 num_batches += 1
@@ -1327,9 +1339,11 @@ class ATLASIntegratedTrainer:
                 attention_mask = batch['attention_mask'].to(self.device)
                 labels = batch['label'].to(self.device)
                 
-                outputs = model(input_ids=input_ids, attention_mask=attention_mask, labels=labels)
-                loss = outputs.loss
-                logits = outputs.logits
+                # Use autocast for eval too (matches training precision)
+                with autocast():
+                    outputs = model(input_ids=input_ids, attention_mask=attention_mask, labels=labels)
+                    loss = outputs.loss
+                    logits = outputs.logits
                 
                 predictions = torch.argmax(logits, dim=-1)
                 total_correct += (predictions == labels).sum().item()
