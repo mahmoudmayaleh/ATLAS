@@ -1233,14 +1233,23 @@ class ATLASIntegratedTrainer:
                 except Exception:
                     rank = 8
         
+        # Debug: print model type and structure
+        print(f"[LoRA Debug] Model type: {type(model).__name__}")
+        print(f"[LoRA Debug] Model config type: {type(model.config).__name__}")
+        
         # Auto-detect target modules based on model architecture
         # Use FULL module paths, not just last component
         all_module_names = []
+        all_module_types = []
         
         for name, module in model.named_modules():
+            all_module_types.append((name, type(module).__name__))
             if isinstance(module, nn.Linear):
                 all_module_names.append(name)
                 
+        print(f"[LoRA Debug] Total modules: {len(all_module_types)}")
+        print(f"[LoRA Debug] First 10 modules: {all_module_types[:10]}")
+        print(f"[LoRA Debug] Linear modules found: {len(all_module_names)}")
         print(f"[LoRA Debug] Sample linear modules: {all_module_names[:5]}")
         
         # Architecture-specific patterns (use regex-style patterns)
@@ -1267,6 +1276,11 @@ class ATLASIntegratedTrainer:
         # Last resort: just use first few non-classifier modules
         if not target_modules:
             target_modules = [n.split('.')[-1] for n in all_module_names if 'score' not in n and 'classifier' not in n][:3]
+        
+        # If STILL no targets, there's a serious problem - use 'all-linear' as emergency fallback
+        if not target_modules:
+            print("[LoRA Debug] WARNING: No suitable target modules found! Using emergency fallback.")
+            target_modules = 'all-linear'  # PEFT special keyword
         
         print(f"[LoRA Debug] Target modules selected: {target_modules}")
         
