@@ -1233,15 +1233,36 @@ class ATLASIntegratedTrainer:
                 except Exception:
                     rank = 8
         
-        # Detect target modules
+        # Auto-detect target modules based on model architecture
         target_modules = []
+        all_linear_names = set()
+        
         for name, module in model.named_modules():
             if isinstance(module, nn.Linear):
-                token = name.split('.')[-1]
-                if any(k in token for k in ['q', 'k', 'v', 'query', 'key', 'value', 'attention']):
-                    target_modules.append(token)
+                # Get the last component of the module name
+                module_name = name.split('.')[-1]
+                all_linear_names.add(module_name)
         
-        target_modules = sorted(set(target_modules))
+        # Architecture-specific target modules
+        # GPT2: c_attn (combined QKV), c_proj (output projection)
+        # LLaMA: q_proj, k_proj, v_proj, o_proj
+        # BERT/DistilBERT: query, key, value
+        
+        if 'c_attn' in all_linear_names:
+            # GPT2 architecture
+            target_modules = ['c_attn', 'c_proj']
+        elif 'q_proj' in all_linear_names:
+            # LLaMA architecture
+            target_modules = ['q_proj', 'k_proj', 'v_proj', 'o_proj']
+        else:
+            # BERT/DistilBERT architecture
+            for name in all_linear_names:
+                if any(k in name.lower() for k in ['query', 'key', 'value', 'attention']):
+                    target_modules.append(name)
+        
+        # Fallback if nothing found
+        if not target_modules:
+            target_modules = ['query', 'value'] if 'query' in all_linear_names else list(all_linear_names)[:2]
         
         # Find classifier modules
         classifier_modules = []
@@ -1249,14 +1270,14 @@ class ATLASIntegratedTrainer:
             if any(cls in name for cls in ['classifier', 'score', 'pre_classifier']):
                 classifier_modules.append(name.split('.')[-1])
         
-        modules_to_save = sorted(set(classifier_modules)) if classifier_modules else ['classifier']
+        modules_to_save = sorted(set(classifier_modules)) if classifier_modules else None
         
         lora_config = LoraConfig(
             task_type=TaskType.SEQ_CLS,
             r=rank,
             lora_alpha=16,
             lora_dropout=0.1,
-            target_modules=target_modules if target_modules else ['query', 'value'],
+            target_modules=target_modules,
             modules_to_save=modules_to_save
         )
         
