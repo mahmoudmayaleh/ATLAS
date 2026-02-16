@@ -444,6 +444,10 @@ class ATLASIntegratedTrainer:
                     ignore_mismatched_sizes=True
                 ).to(self.device)
             
+            # Set padding token for GPT2 (required for batch processing)
+            if model.config.pad_token_id is None:
+                model.config.pad_token_id = model.config.eos_token_id
+            
             # Enable gradient checkpointing for large models (trade compute for memory)
             if hasattr(model, 'gradient_checkpointing_enable'):
                 model.gradient_checkpointing_enable()
@@ -905,6 +909,10 @@ class ATLASIntegratedTrainer:
                     ignore_mismatched_sizes=True  # Ignore head size mismatch for LLMs
                 )
             
+            # Set padding token for GPT2 (required for batch processing)
+            if model.config.pad_token_id is None:
+                model.config.pad_token_id = model.config.eos_token_id
+            
             # Reinitialize classification head with small weights for stability
             if hasattr(model, 'classifier'):
                 torch.nn.init.normal_(model.classifier.weight, mean=0.0, std=0.02)
@@ -1244,12 +1252,13 @@ class ATLASIntegratedTrainer:
         
         for name, module in model.named_modules():
             all_module_types.append((name, type(module).__name__))
-            if isinstance(module, nn.Linear):
+            # GPT2 uses Conv1D instead of Linear!
+            if isinstance(module, nn.Linear) or type(module).__name__ == 'Conv1D':
                 all_module_names.append(name)
                 
         print(f"[LoRA Debug] Total modules: {len(all_module_types)}")
         print(f"[LoRA Debug] First 10 modules: {all_module_types[:10]}")
-        print(f"[LoRA Debug] Linear modules found: {len(all_module_names)}")
+        print(f"[LoRA Debug] Linear/Conv1D modules found: {len(all_module_names)}")
         print(f"[LoRA Debug] Sample linear modules: {all_module_names[:5]}")
         
         # Architecture-specific patterns (use regex-style patterns)
