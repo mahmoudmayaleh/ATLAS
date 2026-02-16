@@ -444,6 +444,11 @@ class ATLASIntegratedTrainer:
                     ignore_mismatched_sizes=True
                 ).to(self.device)
             
+            # Enable gradient checkpointing for large models (trade compute for memory)
+            if hasattr(model, 'gradient_checkpointing_enable'):
+                model.gradient_checkpointing_enable()
+                print("[Gradient checkpointing enabled]", end=" ")
+            
             # Reinitialize classification head for stability
             if hasattr(model, 'classifier'):
                 torch.nn.init.normal_(model.classifier.weight, mean=0.0, std=0.02)
@@ -908,6 +913,10 @@ class ATLASIntegratedTrainer:
                 torch.nn.init.normal_(model.score.weight, mean=0.0, std=0.02)
                 if model.score.bias is not None:
                     torch.nn.init.zeros_(model.score.bias)
+            
+            # Enable gradient checkpointing before LoRA (saves memory during training)
+            if hasattr(model, 'gradient_checkpointing_enable'):
+                model.gradient_checkpointing_enable()
             
             # Apply LoRA with heterogeneous ranks; keep model on CPU to save VRAM
             model = self._apply_heterogeneous_lora(model, client_data.lora_ranks)
