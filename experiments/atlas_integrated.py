@@ -1242,6 +1242,8 @@ class ATLASIntegratedTrainer:
                 # Get the last component of the module name
                 module_name = name.split('.')[-1]
                 all_linear_names.add(module_name)
+                
+        print(f"[LoRA Debug] All linear module names found: {sorted(all_linear_names)}")
         
         # Architecture-specific target modules
         # GPT2: c_attn (combined QKV), c_proj (output projection)
@@ -1262,15 +1264,21 @@ class ATLASIntegratedTrainer:
         
         # Fallback if nothing found
         if not target_modules:
-            target_modules = ['query', 'value'] if 'query' in all_linear_names else list(all_linear_names)[:2]
+            # Just use any attention-related modules, excluding classifier
+            target_modules = [m for m in all_linear_names if 'score' not in m and 'classifier' not in m][:3]
         
-        # Find classifier modules
+        print(f"[LoRA Debug] Target modules selected: {target_modules}")
+        
+        # Find classifier modules - these should NOT overlap with target_modules
         classifier_modules = []
         for name, _ in model.named_modules():
-            if any(cls in name for cls in ['classifier', 'score', 'pre_classifier']):
-                classifier_modules.append(name.split('.')[-1])
+            module_name = name.split('.')[-1]
+            if any(cls in module_name for cls in ['classifier', 'score', 'pre_classifier']):
+                if module_name not in target_modules:  # Avoid overlap
+                    classifier_modules.append(module_name)
         
         modules_to_save = sorted(set(classifier_modules)) if classifier_modules else None
+        print(f"[LoRA Debug] Modules to save (classifier): {modules_to_save}")
         
         lora_config = LoraConfig(
             task_type=TaskType.SEQ_CLS,
