@@ -1234,44 +1234,45 @@ class ATLASIntegratedTrainer:
                     rank = 8
         
         # Auto-detect target modules based on model architecture
-        target_modules = []
-        all_linear_names = set()
+        # Use FULL module paths, not just last component
+        all_module_names = []
         
         for name, module in model.named_modules():
             if isinstance(module, nn.Linear):
-                # Get the last component of the module name
-                module_name = name.split('.')[-1]
-                all_linear_names.add(module_name)
+                all_module_names.append(name)
                 
-        print(f"[LoRA Debug] All linear module names found: {sorted(all_linear_names)}")
+        print(f"[LoRA Debug] Sample linear modules: {all_module_names[:5]}")
         
-        # Architecture-specific target modules
-        # GPT2: c_attn (combined QKV), c_proj (output projection)
-        # LLaMA: q_proj, k_proj, v_proj, o_proj
-        # BERT/DistilBERT: query, key, value
+        # Architecture-specific patterns (use regex-style patterns)
+        target_modules = []
         
-        if 'c_attn' in all_linear_names:
-            # GPT2 architecture
+        # Check for GPT2 architecture
+        if any('c_attn' in name for name in all_module_names):
             target_modules = ['c_attn', 'c_proj']
-        elif 'q_proj' in all_linear_names:
-            # LLaMA architecture
+        # Check for LLaMA architecture
+        elif any('q_proj' in name for name in all_module_names):
             target_modules = ['q_proj', 'k_proj', 'v_proj', 'o_proj']
+        # Check for BERT/DistilBERT architecture
+        elif any('query' in name for name in all_module_names):
+            target_modules = ['query', 'key', 'value']
         else:
-            # BERT/DistilBERT architecture
-            for name in all_linear_names:
-                if any(k in name.lower() for k in ['query', 'key', 'value', 'attention']):
-                    target_modules.append(name)
+            # Generic fallback: find common attention patterns
+            patterns = ['attn', 'attention', 'self']
+            for pattern in patterns:
+                matched = [n.split('.')[-1] for n in all_module_names if pattern in n and 'score' not in n and 'classifier' not in n]
+                if matched:
+                    target_modules = list(set(matched))[:4]
+                    break
         
-        # Fallback if nothing found
+        # Last resort: just use first few non-classifier modules
         if not target_modules:
-            # Just use any attention-related modules, excluding classifier
-            target_modules = [m for m in all_linear_names if 'score' not in m and 'classifier' not in m][:3]
+            target_modules = [n.split('.')[-1] for n in all_module_names if 'score' not in n and 'classifier' not in n][:3]
         
         print(f"[LoRA Debug] Target modules selected: {target_modules}")
         
         # Find classifier modules - these should NOT overlap with target_modules
         classifier_modules = []
-        for name, _ in model.named_modules():
+        for name in all_module_names:
             module_name = name.split('.')[-1]
             if any(cls in module_name for cls in ['classifier', 'score', 'pre_classifier']):
                 if module_name not in target_modules:  # Avoid overlap
