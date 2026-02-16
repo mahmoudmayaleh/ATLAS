@@ -52,7 +52,7 @@ warnings.filterwarnings('ignore')
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader, Subset
-from torch.cuda.amp import autocast, GradScaler
+from torch.cuda.amp import autocast
 from transformers import AutoTokenizer, AutoModelForSequenceClassification
 from datasets import load_dataset
 import numpy as np
@@ -1327,7 +1327,6 @@ class ATLASIntegratedTrainer:
         model.train()
         dataloader = DataLoader(dataset, batch_size=self.config.batch_size, shuffle=True)
         optimizer = torch.optim.AdamW(model.parameters(), lr=self.config.learning_rate)
-        scaler = GradScaler()  # For FP16 mixed precision training
         
         total_loss = 0.0
         num_batches = 0
@@ -1341,7 +1340,7 @@ class ATLASIntegratedTrainer:
                 
                 optimizer.zero_grad()
                 
-                # Mixed precision forward pass
+                # Mixed precision forward pass (autocast handles FP16 model)
                 with autocast():
                     outputs = model(input_ids=input_ids, attention_mask=attention_mask, labels=labels)
                     loss = outputs.loss
@@ -1352,16 +1351,14 @@ class ATLASIntegratedTrainer:
                     nan_detected = True
                     continue
                 
-                # Scaled backward pass (for FP16 stability)
-                scaler.scale(loss).backward()
+                # Standard backward (no scaler needed for FP16 models)
+                loss.backward()
                 
-                # Unscale before gradient clipping
-                scaler.unscale_(optimizer)
+                # Gradient clipping
                 torch.nn.utils.clip_grad_norm_(model.parameters(), self.config.gradient_clip_norm)
                 
-                # Optimizer step with scaler
-                scaler.step(optimizer)
-                scaler.update()
+                # Optimizer step
+                optimizer.step()
                 
                 total_loss += loss.item()
                 num_batches += 1
