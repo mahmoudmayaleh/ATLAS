@@ -118,6 +118,16 @@ class StatisticalExperimentRunner:
         if 'eta' in self.base_config and config == 'atlas':
             cmd.extend(['--eta', str(self.base_config['eta'])])
         
+        # Add optional hyperparameters if specified
+        if 'lr' in self.base_config:
+            cmd.extend(['--lr', str(self.base_config['lr'])])
+        if 'batch_size' in self.base_config:
+            cmd.extend(['--batch-size', str(self.base_config['batch_size'])])
+        if 'fingerprint_samples' in self.base_config:
+            cmd.extend(['--fingerprint-samples', str(self.base_config['fingerprint_samples'])])
+        if 'fingerprint_batches' in self.base_config:
+            cmd.extend(['--fingerprint-batches', str(self.base_config['fingerprint_batches'])])
+        
         # Result file path (include seed to avoid overwriting other runs)
         result_file = f"results/atlas_integrated_{self.base_config['mode']}_{config}_seed{seed}.json"
         
@@ -384,6 +394,10 @@ def main():
                        help='Local epochs per round')
     parser.add_argument('--eta', type=float, default=0.1,
                        help='Laplacian regularization strength (for ATLAS)')
+    parser.add_argument('--lr', type=float, help='Learning rate (e.g., 5e-6 for large models)')
+    parser.add_argument('--batch-size', type=int, help='Batch size')
+    parser.add_argument('--fingerprint-samples', type=int, help='Fingerprint samples (reduce for large models)')
+    parser.add_argument('--fingerprint-batches', type=int, help='Fingerprint batches (reduce for large models)')
     
     # Output
     parser.add_argument('--output-dir', type=str, default='results/statistical',
@@ -415,6 +429,16 @@ def main():
         'local_epochs': args.local_epochs,
         'eta': args.eta
     }
+    
+    # Add optional parameters if specified
+    if args.lr is not None:
+        base_config['lr'] = args.lr
+    if args.batch_size is not None:
+        base_config['batch_size'] = args.batch_size
+    if args.fingerprint_samples is not None:
+        base_config['fingerprint_samples'] = args.fingerprint_samples
+    if args.fingerprint_batches is not None:
+        base_config['fingerprint_batches'] = args.fingerprint_batches
     
     # Run experiments
     runner = StatisticalExperimentRunner(
