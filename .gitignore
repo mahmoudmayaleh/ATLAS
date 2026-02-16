@@ -66,3 +66,4 @@ datasets/
 # Temporary files
 *.log
 *.tmp
+checkpoints/
