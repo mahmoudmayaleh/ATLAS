@@ -5,6 +5,19 @@
 
 set -e
 
+# Detect Python command (python3 or python)
+if command -v python3 &> /dev/null; then
+    PYTHON_CMD="python3"
+elif command -v python &> /dev/null; then
+    PYTHON_CMD="python"
+else
+    echo "Error: Python not found. Please activate your conda environment first."
+    echo "Try: conda activate atlas_env"
+    exit 1
+fi
+
+echo "Using Python: $PYTHON_CMD ($(which $PYTHON_CMD))"
+
 # Parse arguments
 SESSION=${1:-1}
 METHOD=${2:-atlas}
@@ -57,7 +70,7 @@ echo "Session $SESSION - Rounds $((START + 1)) to $TOTAL_ROUNDS"
 echo "========================================"
 
 # Build command
-CMD="python experiments/atlas_integrated.py \
+CMD="$PYTHON_CMD experiments/atlas_integrated.py \
     --mode quick \
     --ablation $METHOD \
     --model $MODEL \
