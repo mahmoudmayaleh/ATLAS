@@ -5,6 +5,7 @@
 Each GPU handles one seed across all methods. Split 10 rounds into 3 sessions (3+4+3 rounds).
 
 **GPU Assignment:**
+
 - GPU 0 → Seed 42
 - GPU 1 → Seed 123
 - GPU 2 → Seed 456
@@ -12,13 +13,72 @@ Each GPU handles one seed across all methods. Split 10 rounds into 3 sessions (3
 **Methods** (run separately): `atlas`, `fedavg_cluster`, `local_only`
 
 **Session Breakdown:**
+
 - Session 1: Rounds 1-3 (~4 hours/method)
 - Session 2: Rounds 4-7 (~5.3 hours/method)
 - Session 3: Rounds 8-10 (~4 hours/method)
 
 ---
 
+## Platform: Choose Your System
+
+**Linux/Mac users:** Use `*.sh` scripts (bash)  
+**Windows users:** Use `*.ps1` scripts (PowerShell)
+
+---
+
 ## Session 1: Initial Training
+
+### Linux/Mac:
+
+Open 3 terminal sessions (one per GPU) and run:
+
+```bash
+# GPU 0 (Terminal 1)
+export CUDA_VISIBLE_DEVICES=0
+chmod +x gpu0_seed42.sh
+./gpu0_seed42.sh 1 atlas
+
+# GPU 1 (Terminal 2)
+export CUDA_VISIBLE_DEVICES=1
+chmod +x gpu1_seed123.sh
+./gpu1_seed123.sh 1 atlas
+
+# GPU 2 (Terminal 3)
+export CUDA_VISIBLE_DEVICES=2
+chmod +x gpu2_seed456.sh
+./gpu2_seed456.sh 1 atlas
+```
+
+**Wait for all 3 to complete (~4 hours each).**
+
+Then run `fedavg_cluster`:
+
+```bash
+# GPU 0
+./gpu0_seed42.sh 1 fedavg_cluster
+
+# GPU 1
+./gpu1_seed123.sh 1 fedavg_cluster
+
+# GPU 2
+./gpu2_seed456.sh 1 fedavg_cluster
+```
+
+Then run `local_only`:
+
+```bash
+# GPU 0
+./gpu0_seed42.sh 1 local_only
+
+# GPU 1
+./gpu1_seed123.sh 1 local_only
+
+# GPU 2
+./gpu2_seed456.sh 1 local_only
+```
+
+### Windows (PowerShell):
 
 Open 3 PowerShell terminals (one per GPU) and run:
 
@@ -70,6 +130,28 @@ Then run `local_only`:
 
 After Session 1 completes, start Session 2:
 
+### Linux/Mac:
+
+```bash
+# GPU 0
+export CUDA_VISIBLE_DEVICES=0
+./gpu0_seed42.sh 2 atlas
+
+# GPU 1
+export CUDA_VISIBLE_DEVICES=1
+./gpu1_seed123.sh 2 atlas
+
+# GPU 2
+export CUDA_VISIBLE_DEVICES=2
+./gpu2_seed456.sh 2 atlas
+```
+
+**Wait for all 3 to complete (~5.3 hours each).**
+
+Then run `fedavg_cluster` and `local_only` Session 2 the same way.
+
+### Windows (PowerShell):
+
 ```powershell
 # GPU 0
 $env:CUDA_VISIBLE_DEVICES="0"
@@ -93,6 +175,28 @@ Then run `fedavg_cluster` and `local_only` Session 2 the same way.
 ## Session 3: Final Training (Rounds 8-10)
 
 After Session 2 completes:
+
+### Linux/Mac:
+
+```bash
+# GPU 0
+export CUDA_VISIBLE_DEVICES=0
+./gpu0_seed42.sh 3 atlas
+
+# GPU 1
+export CUDA_VISIBLE_DEVICES=1
+./gpu1_seed123.sh 3 atlas
+
+# GPU 2
+export CUDA_VISIBLE_DEVICES=2
+./gpu2_seed456.sh 3 atlas
+```
+
+**Wait for all 3 to complete (~4 hours each).**
+
+Then run `fedavg_cluster` and `local_only` Session 3.
+
+### Windows (PowerShell):
 
 ```powershell
 # GPU 0
@@ -118,7 +222,30 @@ Then run `fedavg_cluster` and `local_only` Session 3.
 
 If running one GPU sequentially instead of parallel:
 
-### GPU 0 - All Methods - All Sessions
+### Linux/Mac - GPU 0 - All Methods - All Sessions:
+
+```bash
+export CUDA_VISIBLE_DEVICES=0
+
+# Session 1
+./gpu0_seed42.sh 1 atlas
+./gpu0_seed42.sh 1 fedavg_cluster
+./gpu0_seed42.sh 1 local_only
+
+# Session 2
+./gpu0_seed42.sh 2 atlas
+./gpu0_seed42.sh 2 fedavg_cluster
+./gpu0_seed42.sh 2 local_only
+
+# Session 3
+./gpu0_seed42.sh 3 atlas
+./gpu0_seed42.sh 3 fedavg_cluster
+./gpu0_seed42.sh 3 local_only
+```
+
+Repeat for GPU 1 and GPU 2 with their respective scripts.
+
+### Windows (PowerShell) - GPU 0 - All Methods - All Sessions:
 
 ```powershell
 $env:CUDA_VISIBLE_DEVICES="0"
