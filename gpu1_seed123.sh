@@ -40,8 +40,8 @@ SEED=123
 MODEL="gpt2-xl"
 TASKS="sst2 mrpc cola qnli"
 CLIENTS_PER_TASK=3
-SAMPLES=1000
-LOCAL_EPOCHS=2
+SAMPLES=3000
+LOCAL_EPOCHS=3
 BATCH_SIZE=8
 FP_SAMPLES=25
 FP_BATCHES=20
@@ -69,9 +69,11 @@ echo "GPU 1 - Seed $SEED - Method: $METHOD"
 echo "Session $SESSION - Rounds $((START + 1)) to $TOTAL_ROUNDS"
 echo "========================================"
 
-# Build command
+# Build command with session-specific output
+OUTPUT_FILE="results/atlas_integrated_full_atlas_gpt2xl_${METHOD}_seed${SEED}_session${SESSION}.json"
+
 CMD="$PYTHON_CMD experiments/atlas_integrated.py \
-    --mode quick \
+    --mode full_atlas \
     --ablation $METHOD \
     --model $MODEL \
     --tasks $TASKS \
@@ -82,7 +84,8 @@ CMD="$PYTHON_CMD experiments/atlas_integrated.py \
     --batch-size $BATCH_SIZE \
     --fingerprint-samples $FP_SAMPLES \
     --fingerprint-batches $FP_BATCHES \
-    --seed $SEED"
+    --seed $SEED \
+    --output $OUTPUT_FILE"
 
 # Add resume flag if not first session
 if [ "$SESSION" != "1" ]; then
@@ -105,7 +108,7 @@ eval $CMD
 if [ $? -eq 0 ]; then
     echo ""
     echo "[SUCCESS] Session $SESSION complete for $METHOD (seed $SEED)"
-    echo "Results: results/atlas_integrated_quick_${METHOD}_seed${SEED}.json"
+    echo "Results: $OUTPUT_FILE"
     
     if [ "$SESSION" != "3" ]; then
         NEXT_CHECKPOINT="checkpoints/atlas_${METHOD}_seed${SEED}_round_${TOTAL_ROUNDS}.pkl"
