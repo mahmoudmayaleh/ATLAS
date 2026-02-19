@@ -1,0 +1,236 @@
+% ATLAS Core Algorithms for IEEE Paper
+% Two most important algorithms based on actual implementation
+
+\documentclass{IEEEtran}
+\usepackage{algorithm}
+\usepackage{algpseudocode}
+\usepackage{amsmath}
+\usepackage{amssymb}
+
+\begin{document}
+
+% ============================================================================
+% ALGORITHM 1: Gradient-Based Task Clustering
+% ============================================================================
+
+\begin{algorithm}[t]
+\caption{Gradient-Based Task Clustering}
+\label{alg:task_clustering}
+\begin{algorithmic}[1]
+\Require Client set $\mathcal{K} = \{1, \ldots, K\}$, base model $\mathcal{M}_0$, local datasets $\{\mathcal{D}_k\}_{k=1}^K$
+\Require PCA dimension $d$, cluster range $[k_{\min}, k_{\max}]$, fingerprint epochs $E_f$, samples per client $S_f$
+\Ensure Task clusters $\mathcal{C} = \{\mathcal{C}_1, \ldots, \mathcal{C}_{|\mathcal{C}|}\}$, cluster assignments $\{c_k\}_{k=1}^K$
+
+\State \textbf{Phase 1: Gradient Extraction}
+\For{each client $k \in \mathcal{K}$}
+    \State Initialize local model: $\mathcal{M}_k \leftarrow \mathcal{M}_0$
+    \State Sample mini-batch: $\mathcal{B}_k \sim \mathcal{D}_k$ with $|\mathcal{B}_k| = S_f$
+    \State $\mathbf{g}_k^{\text{raw}} \leftarrow \{\}$ \Comment{Gradient accumulator}
+    \For{$e = 1$ to $E_f$}
+        \For{each layer $\ell \in \mathcal{L}$}
+            \State Compute gradient: $\nabla_{\mathbf{W}_\ell} \mathcal{L}(\mathcal{M}_k; \mathcal{B}_k)$
+            \State Layer-wise normalize: $\tilde{\mathbf{g}}_\ell = \frac{\nabla_{\mathbf{W}_\ell}}{\|\nabla_{\mathbf{W}_\ell}\|_2 + \epsilon}$
+            \State Accumulate: $\mathbf{g}_k^{\text{raw}}[\ell] \leftarrow \mathbf{g}_k^{\text{raw}}[\ell] + \tilde{\mathbf{g}}_\ell$
+        \EndFor
+    \EndFor
+    \State Flatten gradients: $\mathbf{g}_k \leftarrow \text{concat}(\{\mathbf{g}_k^{\text{raw}}[\ell]\}_{\ell \in \mathcal{L}})$
+\EndFor
+
+\State \textbf{Phase 2: Fingerprint Computation via PCA}
+\State Stack gradients: $\mathbf{G} = [\mathbf{g}_1, \ldots, \mathbf{g}_K]^\top \in \mathbb{R}^{K \times D}$
+\State Fit PCA: $\mathbf{U}_d, \boldsymbol{\Sigma}_d \leftarrow \text{PCA}(\mathbf{G}, d)$ \Comment{$d \ll D$}
+\For{each client $k \in \mathcal{K}$}
+    \State Project to low-dim: $\mathbf{f}_k = \mathbf{U}_d^\top \mathbf{g}_k \in \mathbb{R}^d$
+    \State L2-normalize: $\mathbf{f}_k \leftarrow \frac{\mathbf{f}_k}{\|\mathbf{f}_k\|_2 + \epsilon}$ \Comment{Fingerprint}
+\EndFor
+
+\State \textbf{Phase 3: Multi-Metric Clustering}
+\State $\mathcal{F} \leftarrow [\mathbf{f}_1, \ldots, \mathbf{f}_K]^\top \in \mathbb{R}^{K \times d}$
+\State $\text{best\_score} \leftarrow -\infty$
+\For{$n_c = k_{\min}$ to $k_{\max}$}
+    \State Run k-means: $\{\mathcal{C}_j^{(n_c)}\}_{j=1}^{n_c}, \{\boldsymbol{\mu}_j\}_{j=1}^{n_c} \leftarrow \text{KMeans}(\mathcal{F}, n_c)$
+    \State Compute Silhouette: $s_{\text{sil}} = \frac{1}{K} \sum_{k=1}^K \frac{b_k - a_k}{\max(a_k, b_k)}$
+    \State Compute Davies-Bouldin: $s_{\text{db}} = \frac{1}{n_c} \sum_{i=1}^{n_c} \max_{j \neq i} \frac{\sigma_i + \sigma_j}{\|\boldsymbol{\mu}_i - \boldsymbol{\mu}_j\|_2}$
+    \State Compute Calinski-Harabasz: $s_{\text{ch}} = \frac{\text{BCSS}/(n_c-1)}{\text{WCSS}/(K-n_c)}$
+    \State Singleton penalty: $p = 0.15 \times |\{j : |\mathcal{C}_j^{(n_c)}| = 1\}|$
+    \State Combined score: $s = 0.5 \cdot \frac{s_{\text{sil}}+1}{2} + 0.3 \cdot \frac{1}{1+s_{\text{db}}} + 0.2 \cdot \frac{s_{\text{ch}}}{s_{\text{ch}}+1000} - p$
+    \If{$s > \text{best\_score}$}
+        \State $\text{best\_score} \leftarrow s$, $\mathcal{C} \leftarrow \{\mathcal{C}_j^{(n_c)}\}_{j=1}^{n_c}$
+    \EndIf
+\EndFor
+
+\State \textbf{Return:} Clusters $\mathcal{C}$ and assignments $c_k = j$ if $k \in \mathcal{C}_j$
+\end{algorithmic}
+\end{algorithm}
+
+% ============================================================================
+% ALGORITHM 2: Laplacian Regularization with Heterogeneous LoRA
+% ============================================================================
+
+\begin{algorithm}[t]
+\caption{Laplacian Regularization with Heterogeneous LoRA Ranks}
+\label{alg:laplacian_aggregation}
+\begin{algorithmic}[1]
+\Require Client models $\{\mathbf{W}_k^{(t,R)}\}_{k=1}^K$ after local training at round $t$
+\Require Task graph $\mathcal{G} = (\mathcal{K}, \mathcal{E})$ with adjacency weights $\{a_{k\ell}\}$
+\Require Regularization strength $\eta$, rank alignment mode $\rho \in \{\text{truncate}, \text{pad}, \text{svd}\}$
+\Require Layer importance weights $\{\omega_\ell\}_{\ell \in \mathcal{L}}$ from Phase 2
+\Ensure Updated models $\{\mathbf{W}_k^{(t+1)}\}_{k=1}^K$
+
+\State \textbf{Input:} Each $\mathbf{W}_k^{(t,R)} = \{\mathbf{A}_k^\ell, \mathbf{B}_k^\ell\}_{\ell \in \mathcal{L}}$ where $\mathbf{A}_k^\ell \in \mathbb{R}^{r_k^\ell \times d}$, $\mathbf{B}_k^\ell \in \mathbb{R}^{d \times r_k^\ell}$
+
+\For{each client $k \in \mathcal{K}$}
+    \State $\mathcal{N}_k \leftarrow \{\ell : (k, \ell) \in \mathcal{E}\}$ \Comment{Get neighbors}
+    \If{$|\mathcal{N}_k| = 0$}
+        \State $\mathbf{W}_k^{(t+1)} \leftarrow \mathbf{W}_k^{(t,R)}$ \Comment{Isolated client, no update}
+        \State \textbf{continue}
+    \EndIf
+    
+    \For{each layer $\ell \in \mathcal{L}$}
+        \State $\Delta \mathbf{A}_k^\ell \leftarrow \mathbf{0}_{r_k^\ell \times d}$, $\Delta \mathbf{B}_k^\ell \leftarrow \mathbf{0}_{d \times r_k^\ell}$
+        
+        \For{each neighbor $\ell' \in \mathcal{N}_k$}
+            \State \textbf{// Heterogeneous Rank Alignment}
+            \If{$r_k^\ell \neq r_{\ell'}^\ell$} \Comment{Different LoRA ranks}
+                \State $\tilde{\mathbf{A}}_k, \tilde{\mathbf{A}}_{\ell'} \leftarrow \textsc{AlignRanks}(\mathbf{A}_k^\ell, \mathbf{A}_{\ell'}^\ell, \rho)$
+                \State $\tilde{\mathbf{B}}_k, \tilde{\mathbf{B}}_{\ell'} \leftarrow \textsc{AlignRanks}(\mathbf{B}_k^\ell, \mathbf{B}_{\ell'}^\ell, \rho)$
+            \Else
+                \State $\tilde{\mathbf{A}}_k \leftarrow \mathbf{A}_k^\ell$, $\tilde{\mathbf{A}}_{\ell'} \leftarrow \mathbf{A}_{\ell'}^\ell$
+                \State $\tilde{\mathbf{B}}_k \leftarrow \mathbf{B}_k^\ell$, $\tilde{\mathbf{B}}_{\ell'} \leftarrow \mathbf{B}_{\ell'}^\ell$
+            \EndIf
+            
+            \State \textbf{// Compute weighted difference}
+            \State $\lambda_{k\ell'} \leftarrow \omega_\ell \cdot a_{k\ell'}$ \Comment{Layer importance × adjacency}
+            \State $\Delta \mathbf{A}_k^\ell \leftarrow \Delta \mathbf{A}_k^\ell + \lambda_{k\ell'} (\tilde{\mathbf{A}}_k - \tilde{\mathbf{A}}_{\ell'})$
+            \State $\Delta \mathbf{B}_k^\ell \leftarrow \Delta \mathbf{B}_k^\ell + \lambda_{k\ell'} (\tilde{\mathbf{B}}_k - \tilde{\mathbf{B}}_{\ell'})$
+            
+            \State \textbf{// Restore original size if truncated}
+            \If{$\text{shape}(\Delta \mathbf{A}_k^\ell) \neq (r_k^\ell, d)$}
+                \State $\Delta \mathbf{A}_k^\ell \leftarrow \textsc{PadToSize}(\Delta \mathbf{A}_k^\ell, r_k^\ell, d)$
+            \EndIf
+            \If{$\text{shape}(\Delta \mathbf{B}_k^\ell) \neq (d, r_k^\ell)$}
+                \State $\Delta \mathbf{B}_k^\ell \leftarrow \textsc{PadToSize}(\Delta \mathbf{B}_k^\ell, d, r_k^\ell)$
+            \EndIf
+        \EndFor
+        
+        \State \textbf{// Laplacian update (MIRA formula)}
+        \State $\mathbf{A}_k^{\ell,(t+1)} \leftarrow \mathbf{A}_k^{\ell,(t,R)} - \eta \cdot \Delta \mathbf{A}_k^\ell$
+        \State $\mathbf{B}_k^{\ell,(t+1)} \leftarrow \mathbf{B}_k^{\ell,(t,R)} - \eta \cdot \Delta \mathbf{B}_k^\ell$
+    \EndFor
+    
+    \State $\mathbf{W}_k^{(t+1)} \leftarrow \{\mathbf{A}_k^{\ell,(t+1)}, \mathbf{B}_k^{\ell,(t+1)}\}_{\ell \in \mathcal{L}}$
+\EndFor
+
+\State \textbf{Return:} Updated models $\{\mathbf{W}_k^{(t+1)}\}_{k=1}^K$
+\end{algorithmic}
+\end{algorithm}
+
+% ============================================================================
+% HELPER FUNCTIONS (referenced in Algorithm 2)
+% ============================================================================
+
+\begin{algorithm}[t]
+\caption{Rank Alignment Subroutines}
+\label{alg:rank_alignment}
+\begin{algorithmic}[1]
+\Function{AlignRanks}{$\mathbf{T}_1 \in \mathbb{R}^{r_1 \times d}$, $\mathbf{T}_2 \in \mathbb{R}^{r_2 \times d}$, mode $\rho$}
+    \If{$\rho = \text{truncate}$}
+        \State $r^* \leftarrow \min(r_1, r_2)$
+        \State \Return $\mathbf{T}_1[:r^*, :], \mathbf{T}_2[:r^*, :]$ \Comment{Truncate to smaller rank}
+    \ElsIf{$\rho = \text{pad}$}
+        \State $r^* \leftarrow \max(r_1, r_2)$
+        \If{$r_1 < r^*$}
+            \State $\mathbf{T}_1 \leftarrow [\mathbf{T}_1; \mathbf{0}_{(r^*-r_1) \times d}]$ \Comment{Zero-pad}
+        \EndIf
+        \If{$r_2 < r^*$}
+            \State $\mathbf{T}_2 \leftarrow [\mathbf{T}_2; \mathbf{0}_{(r^*-r_2) \times d}]$
+        \EndIf
+        \State \Return $\mathbf{T}_1, \mathbf{T}_2$
+    \ElsIf{$\rho = \text{svd}$}
+        \State $r^* \leftarrow \min(r_1, r_2)$
+        \State $\mathbf{U}_1, \boldsymbol{\Sigma}_1, \mathbf{V}_1 \leftarrow \text{SVD}(\mathbf{T}_1)$
+        \State $\mathbf{U}_2, \boldsymbol{\Sigma}_2, \mathbf{V}_2 \leftarrow \text{SVD}(\mathbf{T}_2)$
+        \State \Return $\mathbf{U}_1[:r^*, :], \mathbf{U}_2[:r^*, :]$ \Comment{Project to top-$r^*$ subspace}
+    \EndIf
+\EndFunction
+
+\Function{PadToSize}{$\mathbf{T} \in \mathbb{R}^{r' \times d}$, target rank $r$, target dim $d$}
+    \If{$r' < r$}
+        \State $\mathbf{T} \leftarrow [\mathbf{T}; \mathbf{0}_{(r-r') \times d}]$ \Comment{Pad rows}
+    \EndIf
+    \State \Return $\mathbf{T}$
+\EndFunction
+\end{algorithmic}
+\end{algorithm}
+
+% ============================================================================
+% ADJACENCY WEIGHT COMPUTATION (referenced in Algorithm 2)
+% ============================================================================
+
+\begin{algorithm}[t]
+\caption{Task Graph Construction with RBF Kernel (MIRA)}
+\label{alg:task_graph}
+\begin{algorithmic}[1]
+\Require Fingerprints $\{\mathbf{f}_k\}_{k=1}^K$ from Algorithm~\ref{alg:task_clustering}
+\Require Cluster assignments $\{c_k\}_{k=1}^K$, RBF bandwidth $\alpha$, $k$-neighbors $K_{\text{nn}}$
+\Ensure Adjacency matrix $\mathbf{A} = [a_{k\ell}]_{K \times K}$
+
+\State Initialize: $\mathbf{A} \leftarrow \mathbf{0}_{K \times K}$
+
+\For{each client $k \in \mathcal{K}$}
+    \State $\mathcal{T}_k \leftarrow \{\ell : c_\ell = c_k\}$ \Comment{Same-task clients}
+    
+    \State \textbf{// Compute RBF similarities}
+    \For{each $\ell \in \mathcal{T}_k \setminus \{k\}$}
+        \State $s_{k\ell} \leftarrow \exp\left(-\alpha \|\mathbf{f}_k - \mathbf{f}_\ell\|_2^2\right)$ \Comment{RBF kernel}
+    \EndFor
+    
+    \State \textbf{// Select top-$K_{\text{nn}}$ neighbors}
+    \State $\mathcal{N}_k \leftarrow \text{TopK}(\{s_{k\ell} : \ell \in \mathcal{T}_k \setminus \{k\}\}, K_{\text{nn}})$
+    
+    \State \textbf{// Normalize weights: } $\sum_{\ell \in \mathcal{N}_k} a_{k\ell} = 1$
+    \State $Z_k \leftarrow \sum_{\ell \in \mathcal{N}_k} s_{k\ell}$
+    \For{each $\ell \in \mathcal{N}_k$}
+        \State $a_{k\ell} \leftarrow s_{k\ell} / Z_k$
+    \EndFor
+\EndFor
+
+\State \textbf{// Symmetrize:} $a_{k\ell} \leftarrow (a_{k\ell} + a_{\ell k}) / 2$ for all $k, \ell$
+
+\State \textbf{Return:} Adjacency matrix $\mathbf{A}$
+\end{algorithmic}
+\end{algorithm}
+
+% ============================================================================
+% NOTATION TABLE (for paper's methodology section)
+% ============================================================================
+
+\section*{Notation Summary}
+
+\begin{table}[h]
+\centering
+\caption{Mathematical Notation}
+\begin{tabular}{cl}
+\hline
+\textbf{Symbol} & \textbf{Description} \\
+\hline
+$K$ & Number of clients \\
+$\mathcal{D}_k$ & Local dataset of client $k$ \\
+$\mathbf{W}_k^{(t)}$ & Model parameters of client $k$ at round $t$ \\
+$\mathbf{A}_k^\ell, \mathbf{B}_k^\ell$ & LoRA matrices for layer $\ell$ of client $k$ \\
+$r_k^\ell$ & LoRA rank for layer $\ell$ of client $k$ (heterogeneous) \\
+$\mathbf{f}_k \in \mathbb{R}^d$ & Gradient fingerprint (PCA-reduced) \\
+$\mathcal{C}_j$ & Task cluster $j$ \\
+$c_k$ & Cluster assignment of client $k$ \\
+$\mathcal{N}_k$ & Neighbor set of client $k$ in task graph \\
+$a_{k\ell}$ & Adjacency weight between clients $k$ and $\ell$ \\
+$\eta$ & Laplacian regularization strength \\
+$\alpha$ & RBF kernel bandwidth \\
+$\omega_\ell$ & Importance weight of layer $\ell$ \\
+$E_f$ & Fingerprint extraction epochs \\
+$S_f$ & Fingerprint samples per client \\
+\hline
+\end{tabular}
+\end{table}
+
+\end{document}
