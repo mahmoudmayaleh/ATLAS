@@ -73,7 +73,7 @@ echo "========================================"
 OUTPUT_FILE="results/atlas_integrated_full_atlas_gpt2xl_${METHOD}_seed${SEED}_session${SESSION}.json"
 
 CMD="$PYTHON_CMD experiments/atlas_integrated.py \
-    --mode full_atlas \
+    --mode full \
     --ablation $METHOD \
     --model $MODEL \
     --tasks $TASKS \
@@ -84,8 +84,7 @@ CMD="$PYTHON_CMD experiments/atlas_integrated.py \
     --batch-size $BATCH_SIZE \
     --fingerprint-samples $FP_SAMPLES \
     --fingerprint-batches $FP_BATCHES \
-    --seed $SEED \
-    --output $OUTPUT_FILE"
+    --seed $SEED"
 
 # Add resume flag if not first session
 if [ "$SESSION" != "1" ]; then
@@ -108,8 +107,14 @@ eval $CMD
 if [ $? -eq 0 ]; then
     echo ""
     echo "[SUCCESS] Session $SESSION complete for $METHOD (seed $SEED)"
-    echo "Results: $OUTPUT_FILE"
-    
+    GENERATED="results/atlas_integrated_full_${METHOD}_seed${SEED}.json"
+    if [ -f "$GENERATED" ]; then
+        mv "$GENERATED" "$OUTPUT_FILE"
+        echo "Results: $OUTPUT_FILE"
+    else
+        echo "[WARN] Expected results file not found: $GENERATED"
+    fi
+
     if [ "$SESSION" != "3" ]; then
         NEXT_CHECKPOINT="checkpoints/atlas_${METHOD}_seed${SEED}_round_${TOTAL_ROUNDS}.pkl"
         echo "Checkpoint saved: $NEXT_CHECKPOINT"
