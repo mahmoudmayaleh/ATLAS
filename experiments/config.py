@@ -65,7 +65,7 @@ MODELS = {
         # Experiment-specific hyperparameters
         "batch_size": 16,
         "learning_rate": 3e-5,
-        "local_epochs": 2,
+        "local_epochs": 3,
         "fingerprint_samples": 100,
         "fingerprint_batches": 30,
         "max_samples": 3000,
@@ -81,7 +81,7 @@ MODELS = {
         # Experiment-specific hyperparameters
         "batch_size": 16,
         "learning_rate": 3e-5,
-        "local_epochs": 2,
+        "local_epochs": 3,
         "fingerprint_samples": 100,
         "fingerprint_batches": 30,
         "max_samples": 3000,
@@ -93,7 +93,8 @@ MODELS = {
         "hidden_size": 1024,
         "num_layers": 24,
         "full_params": 355_000_000,
-        "full_size_mb": 1400
+        "full_size_mb": 1400,
+        "local_epochs": 3
     },
     "gpt2-xl": {
         "name": "gpt2-xl",
@@ -121,7 +122,7 @@ MODELS = {
         # Experiment-specific hyperparameters
         "batch_size": 12,
         "learning_rate": 3e-5,
-        "local_epochs": 2,
+        "local_epochs": 3,
         "fingerprint_samples": 80,
         "fingerprint_batches": 25,
         "max_samples": 3000,
@@ -133,7 +134,8 @@ MODELS = {
         "hidden_size": 768,
         "num_layers": 12,
         "full_params": 110_000_000,
-        "full_size_mb": 440
+        "full_size_mb": 440,
+        "local_epochs": 3
     }
 }
 
@@ -395,7 +397,7 @@ def get_model_hyperparameters(model_name: str) -> Dict[str, Any]:
     return {
         'batch_size': config.get('batch_size', 16),
         'learning_rate': config.get('learning_rate', 2e-5),
-        'local_epochs': config.get('local_epochs', 2),
+        'local_epochs': config.get('local_epochs', 3),
         'fingerprint_samples': config.get('fingerprint_samples', 50),
         'fingerprint_batches': config.get('fingerprint_batches', 20),
         'max_samples': config.get('max_samples', 3000),
