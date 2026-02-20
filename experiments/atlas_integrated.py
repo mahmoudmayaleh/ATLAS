@@ -163,6 +163,15 @@ class ATLASIntegratedTrainer:
         self.config = config
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         
+        # Get model-specific configuration
+        from config import get_model_hyperparameters
+        try:
+            model_hparams = get_model_hyperparameters(config.model_name)
+            model_hidden_size = model_hparams['hidden_size']
+        except:
+            # Fallback to default
+            model_hidden_size = 768
+        
         # Initialize ATLAS components
         self.gradient_extractor = GradientExtractor(
             dim=config.fingerprint_dim,
@@ -175,7 +184,7 @@ class ATLASIntegratedTrainer:
         )
         self.device_profiler = DeviceProfiler()
         self.rank_allocator = RankAllocator(
-            model_dim=768,  # DistilBERT hidden size
+            model_dim=model_hidden_size,  # Use model-specific hidden size
             bytes_per_param=4  # fp32
         )
         
@@ -1520,6 +1529,7 @@ class ATLASIntegratedTrainer:
 
 if __name__ == "__main__":
     import argparse
+    from config import get_model_hyperparameters
     
     parser = argparse.ArgumentParser(description="Run ATLAS integrated experiment")
     parser.add_argument("--mode", choices=["quick", "full"], default="quick")
@@ -1533,7 +1543,7 @@ if __name__ == "__main__":
     
     # NEW: Model and task configuration for publication experiments
     parser.add_argument("--model", type=str, default="distilbert-base-uncased",
-                       help="Model to use: distilbert-base-uncased, bert-base-uncased, roberta-base, gpt2")
+                       help="Model to use: distilbert, gpt2, gpt2-xl, qwen2.5")
     parser.add_argument("--tasks", type=str, nargs="+", default=['sst2', 'mrpc', 'cola'],
                        help="Tasks to use (space-separated): sst2 mrpc cola qnli mnli")
     parser.add_argument("--clients-per-task", type=int, default=3,
@@ -1562,6 +1572,29 @@ if __name__ == "__main__":
         torch.cuda.manual_seed_all(args.seed)
     print(f"[SEED] Set random seed to {args.seed} for reproducibility")
     
+    # Get model-specific hyperparameters
+    try:
+        model_hparams = get_model_hyperparameters(args.model)
+        print(f"\n[MODEL CONFIG] Using optimized hyperparameters for {args.model}")
+        print(f"  • Batch size: {model_hparams['batch_size']}")
+        print(f"  • Learning rate: {model_hparams['learning_rate']}")
+        print(f"  • Local epochs: {model_hparams['local_epochs']}")
+        print(f"  • Fingerprint samples: {model_hparams['fingerprint_samples']}")
+        print(f"  • Hidden size: {model_hparams['hidden_size']}")
+    except Exception as e:
+        print(f"[WARNING] Could not load model-specific config for {args.model}: {e}")
+        print("[WARNING] Using default hyperparameters")
+        model_hparams = {
+            'batch_size': 16,
+            'learning_rate': 2e-5,
+            'local_epochs': 2,
+            'fingerprint_samples': 50,
+            'fingerprint_batches': 20,
+            'max_samples': 3000,
+            'lora_ranks': [4, 8, 16, 32],
+            'hidden_size': 768
+        }
+    
     if args.mode == "quick":
         # Quick test: For debugging and validation
         print("[MODE] Quick test (30-45 min on T4 GPU)")
@@ -1570,32 +1603,37 @@ if __name__ == "__main__":
             tasks=args.tasks,
             clients_per_task=args.clients_per_task,
             num_rounds=10,  # Quick validation
-            local_epochs=2,
-            batch_size=16,
-            max_samples_per_client=1000,
+            local_epochs=model_hparams['local_epochs'],
+            batch_size=model_hparams['batch_size'],
+            max_samples_per_client=model_hparams['max_samples'],
             fingerprint_epochs=2,
-            fingerprint_batches=64,
+            fingerprint_batches=model_hparams['fingerprint_batches'],
+            fingerprint_samples=model_hparams['fingerprint_samples'],
+            learning_rate=model_hparams['learning_rate'],
+            rank_candidates=model_hparams['lora_ranks'],
             mode=args.ablation,
-            save_every=999  # Only save final checkpoint
-            , seed=args.seed
+            save_every=999,  # Only save final checkpoint
+            seed=args.seed
         )
     else:
         # Full experiment: Publication-quality parameters
-        print("[MODE] Full experiment (2-4 hours per run on T4 GPU)")
-        print("         For 30+ rounds, split into sessions: 15+15 with --resume")
+        print("[MODE] Full experiment - 10 rounds in one shot")
         config = ATLASConfig(
             model_name=args.model,
             tasks=args.tasks,
             clients_per_task=args.clients_per_task,
-            num_rounds=30,  # Publication quality
-            local_epochs=3,  # More thorough training
-            batch_size=16,
-            max_samples_per_client=5000,  # Large enough for convergence
-            fingerprint_epochs=3,  # More reliable fingerprints
-            fingerprint_batches=100,
+            num_rounds=10,  # 10 rounds in one shot
+            local_epochs=model_hparams['local_epochs'],
+            batch_size=model_hparams['batch_size'],
+            max_samples_per_client=model_hparams['max_samples'],
+            fingerprint_epochs=2,
+            fingerprint_batches=model_hparams['fingerprint_batches'],
+            fingerprint_samples=model_hparams['fingerprint_samples'],
+            learning_rate=model_hparams['learning_rate'],
+            rank_candidates=model_hparams['lora_ranks'],
             mode=args.ablation,
-            save_every=999  # Only save final checkpoint
-            , seed=args.seed
+            save_every=999,  # Only save final checkpoint
+            seed=args.seed
         )
     
     # Override parameters from CLI

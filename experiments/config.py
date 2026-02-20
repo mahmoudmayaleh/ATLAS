@@ -55,13 +55,37 @@ SUMMARIZATION_TASKS = {
 # ========== MODEL CONFIGURATIONS ==========
 
 MODELS = {
+    "distilbert": {
+        "name": "distilbert-base-uncased",
+        "type": "sequence_classification",
+        "hidden_size": 768,
+        "num_layers": 6,
+        "full_params": 66_000_000,
+        "full_size_mb": 268,
+        # Experiment-specific hyperparameters
+        "batch_size": 16,
+        "learning_rate": 3e-5,
+        "local_epochs": 2,
+        "fingerprint_samples": 100,
+        "fingerprint_batches": 30,
+        "max_samples": 3000,
+        "lora_ranks": [4, 8, 16, 32]
+    },
     "gpt2": {
         "name": "gpt2",
         "type": "causal_lm",
         "hidden_size": 768,
         "num_layers": 12,
         "full_params": 124_000_000,
-        "full_size_mb": 500
+        "full_size_mb": 500,
+        # Experiment-specific hyperparameters
+        "batch_size": 16,
+        "learning_rate": 3e-5,
+        "local_epochs": 2,
+        "fingerprint_samples": 100,
+        "fingerprint_batches": 30,
+        "max_samples": 3000,
+        "lora_ranks": [4, 8, 16, 32]
     },
     "gpt2-medium": {
         "name": "gpt2-medium",
@@ -70,6 +94,38 @@ MODELS = {
         "num_layers": 24,
         "full_params": 355_000_000,
         "full_size_mb": 1400
+    },
+    "gpt2-xl": {
+        "name": "gpt2-xl",
+        "type": "causal_lm",
+        "hidden_size": 1600,
+        "num_layers": 48,
+        "full_params": 1_558_000_000,
+        "full_size_mb": 6200,
+        # Experiment-specific hyperparameters
+        "batch_size": 8,
+        "learning_rate": 2e-5,
+        "local_epochs": 3,
+        "fingerprint_samples": 25,
+        "fingerprint_batches": 20,
+        "max_samples": 3000,
+        "lora_ranks": [4, 8, 16, 32, 64]
+    },
+    "qwen2.5": {
+        "name": "Qwen/Qwen2.5-0.5B",
+        "type": "causal_lm",
+        "hidden_size": 1024,
+        "num_layers": 24,
+        "full_params": 494_000_000,
+        "full_size_mb": 1976,
+        # Experiment-specific hyperparameters
+        "batch_size": 12,
+        "learning_rate": 3e-5,
+        "local_epochs": 2,
+        "fingerprint_samples": 80,
+        "fingerprint_batches": 25,
+        "max_samples": 3000,
+        "lora_ranks": [4, 8, 16, 32, 48]
     },
     "bert-base": {
         "name": "bert-base-uncased",
@@ -304,10 +360,49 @@ def get_dataset_config(dataset_name: str) -> Dict[str, Any]:
 
 def get_model_config(model_name: str) -> Dict[str, Any]:
     """Get configuration for a model"""
-    if model_name in MODELS:
-        return MODELS[model_name]
+    # Map common aliases to our model keys
+    model_map = {
+        "distilbert": "distilbert",
+        "distilbert-base-uncased": "distilbert",
+        "gpt2": "gpt2",
+        "gpt2-xl": "gpt2-xl",
+        "gpt2xl": "gpt2-xl",
+        "qwen2.5": "qwen2.5",
+        "qwen": "qwen2.5",
+        "Qwen/Qwen2.5-0.5B": "qwen2.5",
+        "qwen-0.5b": "qwen2.5",
+        "bert-base-uncased": "bert-base",
+        "bert-base": "bert-base"
+    }
+    
+    # Normalize model name
+    normalized_name = model_map.get(model_name, model_name)
+    
+    if normalized_name in MODELS:
+        return MODELS[normalized_name]
     else:
-        raise ValueError(f"Unknown model: {model_name}")
+        raise ValueError(f"Unknown model: {model_name}. Available: {list(MODELS.keys())}")
+
+
+def get_model_hyperparameters(model_name: str) -> Dict[str, Any]:
+    """
+    Get experiment-specific hyperparameters for a model.
+    Returns defaults if model doesn't have specific hyperparameters.
+    """
+    config = get_model_config(model_name)
+    
+    # Extract hyperparameters with defaults
+    return {
+        'batch_size': config.get('batch_size', 16),
+        'learning_rate': config.get('learning_rate', 2e-5),
+        'local_epochs': config.get('local_epochs', 2),
+        'fingerprint_samples': config.get('fingerprint_samples', 50),
+        'fingerprint_batches': config.get('fingerprint_batches', 20),
+        'max_samples': config.get('max_samples', 3000),
+        'lora_ranks': config.get('lora_ranks', [4, 8, 16, 32]),
+        'hidden_size': config['hidden_size'],
+        'num_layers': config['num_layers']
+    }
 
 
 def get_device_profile(device_type: str) -> Dict[str, Any]:

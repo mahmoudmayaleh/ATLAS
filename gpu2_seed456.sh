@@ -1,7 +1,7 @@
 #!/bin/bash
-# GPU 2 - Seed 456 - GPT-2 XL Experiments
-# Run each method separately: atlas, fedavg_cluster, local_only
-# Split into 3 sessions: 3 rounds, 4 rounds, 3 rounds
+# GPU 2 - Seed 456 - Dynamic Model Experiments
+# Supports: gpt2, gpt2-xl, qwen-0.5b
+# Runs 10 rounds in one shot with all professional metrics
 
 set -e
 
@@ -19,58 +19,46 @@ fi
 echo "Using Python: $PYTHON_CMD ($(which $PYTHON_CMD))"
 
 # Parse arguments
-SESSION=${1:-1}
+MODEL=${1:-gpt2-xl}
 METHOD=${2:-atlas}
 
 # Validate arguments
-if [[ ! "$SESSION" =~ ^[1-3]$ ]]; then
-    echo "Error: Session must be 1, 2, or 3"
-    echo "Usage: $0 <session> <method>"
+VALID_MODELS=("distilbert" "gpt2" "gpt2-xl" "qwen2.5")
+if [[ ! " ${VALID_MODELS[@]} " =~ " ${MODEL} " ]]; then
+    echo "Error: Invalid model '${MODEL}'"
+    echo "Valid models: distilbert, gpt2, gpt2-xl, qwen2.5"
+    echo "Usage: $0 <model> <method>"
+    echo "  model:  distilbert | gpt2 | gpt2-xl | qwen2.5 (default: gpt2-xl)"
+    echo "  method: atlas | fedavg_cluster | local_only (default: atlas)"
     exit 1
 fi
 
 if [[ ! "$METHOD" =~ ^(atlas|fedavg_cluster|local_only)$ ]]; then
     echo "Error: Method must be atlas, fedavg_cluster, or local_only"
-    echo "Usage: $0 <session> <method>"
+    echo "Usage: $0 <model> <method>"
     exit 1
 fi
 
 # Configuration
 SEED=456
-MODEL="gpt2-xl"
+MODEL_NORMALIZED="${MODEL//\//_}"  # Replace / with _ for file paths
 TASKS="sst2 mrpc cola qnli"
 CLIENTS_PER_TASK=3
-SAMPLES=3000
-LOCAL_EPOCHS=3
-BATCH_SIZE=8
-FP_SAMPLES=25
-FP_BATCHES=20
+ROUNDS=10  # 10 rounds in one shot
 
-# Session configurations
-declare -A SESSION_START SESSION_ROUNDS SESSION_TOTAL
-SESSION_START[1]=0
-SESSION_ROUNDS[1]=3
-SESSION_TOTAL[1]=3
-
-SESSION_START[2]=3
-SESSION_ROUNDS[2]=4
-SESSION_TOTAL[2]=7
-
-SESSION_START[3]=7
-SESSION_ROUNDS[3]=3
-SESSION_TOTAL[3]=10
-
-START=${SESSION_START[$SESSION]}
-TOTAL_ROUNDS=${SESSION_TOTAL[$SESSION]}
-CHECKPOINT_PATH="checkpoints/atlas_${METHOD}_seed${SEED}_round_${START}.pkl"
+# Create directories
+mkdir -p results
+mkdir -p checkpoints
+mkdir -p logs
 
 echo "========================================"
-echo "GPU 2 - Seed $SEED - Method: $METHOD"
-echo "Session $SESSION - Rounds $((START + 1)) to $TOTAL_ROUNDS"
+echo "GPU 2 - Seed $SEED"
+echo "Model: $MODEL | Method: $METHOD"
+echo "Rounds: $ROUNDS (one shot)"
 echo "========================================"
 
-# Build command with session-specific output
-OUTPUT_FILE="results/atlas_integrated_full_atlas_gpt2xl_${METHOD}_seed${SEED}_session${SESSION}.json"
+# Build command - model-specific hyperparameters loaded automatically
+OUTPUT_FILE="results/atlas_${MODEL_NORMALIZED}_${METHOD}_seed${SEED}_r${ROUNDS}.json"
 
 CMD="$PYTHON_CMD experiments/atlas_integrated.py \
     --mode full \
@@ -78,25 +66,8 @@ CMD="$PYTHON_CMD experiments/atlas_integrated.py \
     --model $MODEL \
     --tasks $TASKS \
     --clients-per-task $CLIENTS_PER_TASK \
-    --rounds $TOTAL_ROUNDS \
-    --samples $SAMPLES \
-    --local-epochs $LOCAL_EPOCHS \
-    --batch-size $BATCH_SIZE \
-    --fingerprint-samples $FP_SAMPLES \
-    --fingerprint-batches $FP_BATCHES \
+    --rounds $ROUNDS \
     --seed $SEED"
-
-# Add resume flag if not first session
-if [ "$SESSION" != "1" ]; then
-    if [ -f "$CHECKPOINT_PATH" ]; then
-        echo "[RESUME] Loading checkpoint: $CHECKPOINT_PATH"
-        CMD="$CMD --resume $CHECKPOINT_PATH"
-    else
-        echo "[ERROR] Checkpoint not found: $CHECKPOINT_PATH"
-        echo "Run Session $((SESSION - 1)) first!"
-        exit 1
-    fi
-fi
 
 # Run experiment
 echo ""
@@ -106,26 +77,24 @@ eval $CMD
 
 if [ $? -eq 0 ]; then
     echo ""
-    echo "[SUCCESS] Session $SESSION complete for $METHOD (seed $SEED)"
+    echo "[SUCCESS] Experiment complete for $METHOD (seed $SEED, model $MODEL)"
+    
+    # Find and rename the generated results file
     GENERATED="results/atlas_integrated_full_${METHOD}_seed${SEED}.json"
     if [ -f "$GENERATED" ]; then
         mv "$GENERATED" "$OUTPUT_FILE"
-        echo "Results: $OUTPUT_FILE"
+        echo "Results saved: $OUTPUT_FILE"
     else
         echo "[WARN] Expected results file not found: $GENERATED"
+        echo "[INFO] Checking for alternative result files..."
+        find results/ -name "*${METHOD}*seed${SEED}*.json" -type f -mmin -10
     fi
-
-    if [ "$SESSION" != "3" ]; then
-        NEXT_CHECKPOINT="checkpoints/atlas_${METHOD}_seed${SEED}_round_${TOTAL_ROUNDS}.pkl"
-        echo "Checkpoint saved: $NEXT_CHECKPOINT"
-        echo ""
-        echo "Next: ./gpu2_seed456.sh $((SESSION + 1)) $METHOD"
-    else
-        echo ""
-        echo "[COMPLETE] All sessions done for $METHOD!"
-    fi
+    
+    echo ""
+    echo "[COMPLETE] GPU 2 experiment done!"
+    echo "Model: $MODEL | Seed: $SEED | Method: $METHOD | Rounds: $ROUNDS"
 else
     echo ""
-    echo "[FAILED] Session $SESSION failed"
+    echo "[FAILED] Experiment failed"
     exit 1
 fi
