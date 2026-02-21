@@ -1671,12 +1671,19 @@ if __name__ == "__main__":
             'lora_ranks': [4, 8, 16, 32],
             'hidden_size': 768
         }
+
+    # Resolve model alias -> actual HF repo id (e.g., 'distilbert' -> 'distilbert-base-uncased')
+    try:
+        model_repo = get_model_config(args.model)['name']
+    except Exception:
+        # If mapping fails, fall back to raw args.model
+        model_repo = args.model
     
     if args.mode == "quick":
         # Quick test: For debugging and validation
         print("[MODE] Quick test (30-45 min on T4 GPU)")
         config = ATLASConfig(
-            model_name=args.model,
+            model_name=model_repo,
             tasks=args.tasks,
             clients_per_task=args.clients_per_task,
             num_rounds=10,  # Quick validation
@@ -1696,7 +1703,7 @@ if __name__ == "__main__":
         # Full experiment: Publication-quality parameters
         print("[MODE] Full experiment - 10 rounds in one shot")
         config = ATLASConfig(
-            model_name=args.model,
+            model_name=model_repo,
             tasks=args.tasks,
             clients_per_task=args.clients_per_task,
             num_rounds=10,  # 10 rounds in one shot
