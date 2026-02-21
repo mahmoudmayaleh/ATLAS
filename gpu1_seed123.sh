@@ -29,12 +29,12 @@ if [[ ! " ${VALID_MODELS[@]} " =~ " ${MODEL} " ]]; then
     echo "Valid models: distilbert, gpt2, gpt2-xl, qwen2.5"
     echo "Usage: $0 <model> <method>"
     echo "  model:  distilbert | gpt2 | gpt2-xl | qwen2.5 (default: gpt2-xl)"
-    echo "  method: atlas | fedavg_cluster | local_only (default: atlas)"
+    echo "  method: atlas | atlas_no_laplacian | fedavg_cluster | standard_fl | local_only (default: atlas)"
     exit 1
 fi
 
-if [[ ! "$METHOD" =~ ^(atlas|fedavg_cluster|local_only)$ ]]; then
-    echo "Error: Method must be atlas, fedavg_cluster, or local_only"
+if [[ ! "$METHOD" =~ ^(atlas|atlas_no_laplacian|fedavg_cluster|standard_fl|local_only)$ ]]; then
+    echo "Error: Method must be one of: atlas, atlas_no_laplacian, fedavg_cluster, standard_fl, local_only"
     echo "Usage: $0 <model> <method>"
     exit 1
 fi

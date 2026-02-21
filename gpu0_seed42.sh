@@ -33,8 +33,8 @@ if [[ ! " ${VALID_MODELS[@]} " =~ " ${MODEL} " ]]; then
     exit 1
 fi
 
-if [[ ! "$METHOD" =~ ^(atlas|fedavg_cluster|local_only)$ ]]; then
-    echo "Error: Method must be atlas, fedavg_cluster, or local_only"
+if [[ ! "$METHOD" =~ ^(atlas|atlas_no_laplacian|fedavg_cluster|standard_fl|local_only)$ ]]; then
+    echo "Error: Method must be one of: atlas, atlas_no_laplacian, fedavg_cluster, standard_fl, local_only"
     echo "Usage: $0 <model> <method>"
     exit 1
 fi
