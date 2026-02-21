@@ -5,7 +5,6 @@
 
 set -e
 
-export HUGGINGFACE_HUB_TOKEN="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"
 
 # Detect Python command (python3 or python)
 if command -v python3 &> /dev/null; then
