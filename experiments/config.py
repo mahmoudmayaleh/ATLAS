@@ -55,7 +55,7 @@ SUMMARIZATION_TASKS = {
 # ========== MODEL CONFIGURATIONS ==========
 
 MODELS = {
-    "distilbert": {
+    "distilbert-base-uncased": {
         "name": "distilbert-base-uncased",
         "type": "sequence_classification",
         "hidden_size": 768,
@@ -112,7 +112,7 @@ MODELS = {
         "max_samples": 3000,
         "lora_ranks": [4, 8, 16, 32, 64]
     },
-    "qwen2.5": {
+    "Qwen/Qwen2.5-0.5B": {
         "name": "Qwen/Qwen2.5-0.5B",
         "type": "causal_lm",
         "hidden_size": 1024,
@@ -374,15 +374,13 @@ def get_model_config(model_name: str) -> Dict[str, Any]:
     """Get configuration for a model"""
     # Map common aliases to our model keys
     model_map = {
-        "distilbert": "distilbert",
-        "distilbert-base-uncased": "distilbert",
+        "distilbert": "distilbert-base-uncased",
+        "distilbert-base-uncased": "distilbert-base-uncased",
         "gpt2": "gpt2",
         "gpt2-xl": "gpt2-xl",
         "gpt2xl": "gpt2-xl",
-        "qwen2.5": "qwen2.5",
-        "qwen": "qwen2.5",
-        "Qwen/Qwen2.5-0.5B": "qwen2.5",
-        "qwen-0.5b": "qwen2.5",
+        "Qwen/Qwen2.5-0.5B": "Qwen/Qwen2.5-0.5B",
+        "qwen-0.5b": "Qwen/Qwen2.5-0.5B",
         "bert-base-uncased": "bert-base",
         "bert-base": "bert-base"
     }

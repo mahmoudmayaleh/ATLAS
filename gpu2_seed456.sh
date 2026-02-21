@@ -5,6 +5,8 @@
 
 set -e
 
+export HUGGINGFACE_HUB_TOKEN="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"
+
 # Detect Python command (python3 or python)
 if command -v python3 &> /dev/null; then
     PYTHON_CMD="python3"
@@ -23,12 +25,12 @@ MODEL=${1:-gpt2-xl}
 METHOD=${2:-atlas}
 
 # Validate arguments
-VALID_MODELS=("distilbert" "gpt2" "gpt2-xl" "qwen2.5")
+VALID_MODELS=("distilbert-base-uncased" "gpt2" "gpt2-xl" "Qwen/Qwen2.5-0.5B")
 if [[ ! " ${VALID_MODELS[@]} " =~ " ${MODEL} " ]]; then
     echo "Error: Invalid model '${MODEL}'"
-    echo "Valid models: distilbert, gpt2, gpt2-xl, qwen2.5"
+    echo "Valid models: distilbert-base-uncased, gpt2, gpt2-xl, Qwen/Qwen2.5-0.5B"
     echo "Usage: $0 <model> <method>"
-    echo "  model:  distilbert | gpt2 | gpt2-xl | qwen2.5 (default: gpt2-xl)"
+    echo "  model:  distilbert-base-uncased | gpt2 | gpt2-xl | Qwen/Qwen2.5-0.5B (default: gpt2-xl)"
     echo "  method: atlas | atlas_no_laplacian | fedavg_cluster | standard_fl | local_only (default: atlas)"
     exit 1
 fi

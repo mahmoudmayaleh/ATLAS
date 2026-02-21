@@ -188,8 +188,23 @@ class ATLASIntegratedTrainer:
             bytes_per_param=4  # fp32
         )
         
-        # Load model & tokenizer
-        self.tokenizer = AutoTokenizer.from_pretrained(config.model_name)
+        # Load model & tokenizer (pass HF token if available)
+        hf_token = os.environ.get('HUGGINGFACE_HUB_TOKEN') or os.environ.get('HF_HUB_TOKEN')
+        try:
+                        # Resolve common aliases (e.g., 'distilbert' -> 'distilbert-base-uncased')
+            try:
+                model_repo = get_model_config(config.model_name)['name']
+            except Exception:
+                model_repo = config.model_name
+
+            self.tokenizer = AutoTokenizer.from_pretrained(model_repo, use_auth_token=hf_token)
+        except Exception:
+            # Fallback: try without token and with original name
+            try:
+                self.tokenizer = AutoTokenizer.from_pretrained(config.model_name)
+            except Exception:
+                # Last resort: re-raise the original error for visibility
+                raise
         if self.tokenizer.pad_token is None:
             self.tokenizer.pad_token = self.tokenizer.eos_token
         
@@ -1672,6 +1687,13 @@ if __name__ == "__main__":
             'hidden_size': 768
         }
 
+    # Resolve model alias -> actual HF repo id (e.g., 'distilbert' -> 'distilbert-base-uncased')
+    try:
+        model_repo = get_model_config(args.model)['name']
+    except Exception:
+        # If mapping fails, fall back to raw args.model
+        model_repo = args.model
+    
     # Resolve model alias -> actual HF repo id (e.g., 'distilbert' -> 'distilbert-base-uncased')
     try:
         model_repo = get_model_config(args.model)['name']
