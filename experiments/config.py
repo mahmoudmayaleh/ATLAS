@@ -216,28 +216,6 @@ class TrainingConfig:
 # ========== BASELINE CONFIGURATIONS ==========
 
 BASELINES = {
-    "standard_fl": {
-        "name": "Standard Federated Learning",
-        "description": "Full model training with FedAvg",
-        "heterogeneous": False,
-        "task_aware": False,
-        "split_learning": False
-    },
-    "homogeneous_lora": {
-        "name": "Homogeneous LoRA",
-        "description": "Same LoRA rank for all clients",
-        "heterogeneous": False,
-        "task_aware": False,
-        "split_learning": False,
-        "lora_rank": 16
-    },
-    "hsplitlora": {
-        "name": "HSplitLoRA (No Task Clustering)",
-        "description": "Heterogeneous ranks without task-aware aggregation",
-        "heterogeneous": True,
-        "task_aware": False,
-        "split_learning": True
-    },
     "atlas": {
         "name": "ATLAS (Full System)",
         "description": "Task clustering + heterogeneous ranks + split learning + Laplacian",
@@ -245,6 +223,38 @@ BASELINES = {
         "task_aware": True,
         "split_learning": True,
         "laplacian": True
+    },
+    "atlas_no_laplacian": {
+        "name": "ATLAS without Laplacian",
+        "description": "Task clustering + heterogeneous ranks + split learning (no Laplacian)",
+        "heterogeneous": True,
+        "task_aware": True,
+        "split_learning": True,
+        "laplacian": False
+    },
+    "fedavg_cluster": {
+        "name": "Task-aware FedAvg",
+        "description": "Task clustering with FedAvg (no heterogeneous, no split, no Laplacian)",
+        "heterogeneous": False,
+        "task_aware": True,
+        "split_learning": False,
+        "laplacian": False
+    },
+    "standard_fl": {
+        "name": "Standard Federated Learning (FedAvg)",
+        "description": "Pure global FedAvg across all clients (no clustering, no heterogeneous, no split, no Laplacian)",
+        "heterogeneous": False,
+        "task_aware": False,
+        "split_learning": False,
+        "laplacian": False
+    },
+    "local_only": {
+        "name": "Local Training Only",
+        "description": "No aggregation (baseline for comparison)",
+        "heterogeneous": False,
+        "task_aware": False,
+        "split_learning": False,
+        "laplacian": False
     }
 }
 

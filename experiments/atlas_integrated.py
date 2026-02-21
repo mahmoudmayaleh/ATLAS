@@ -392,9 +392,18 @@ class ATLASIntegratedTrainer:
         # ========== PHASE 2: HETEROGENEOUS RANK ALLOCATION ==========
         if start_round == 0:
             print(f"\n{'='*70}")
-            print(f"PHASE 2: HETEROGENEOUS RANK ALLOCATION")
+            if self.config.mode in ['standard_fl', 'fedavg_cluster']:
+                print(f"PHASE 2: HOMOGENEOUS RANK ALLOCATION")
+            else:
+                print(f"PHASE 2: HETEROGENEOUS RANK ALLOCATION")
             print(f"{'='*70}\n")
-            device_configs = self._phase2_rank_allocation(cluster_labels, fingerprints, layer_importances)
+            
+            if self.config.mode in ['standard_fl', 'fedavg_cluster']:
+                # Homogeneous baseline: same rank for all clients
+                device_configs = self._phase2_homogeneous_ranks(cluster_labels)
+            else:
+                # Heterogeneous: adaptive ranks per device/cluster (atlas, atlas_no_laplacian)
+                device_configs = self._phase2_rank_allocation(cluster_labels, fingerprints, layer_importances)
         else:
             device_configs = checkpoint['device_configs']
             print(f"[RESUME] Loaded rank configs from checkpoint")
@@ -841,6 +850,62 @@ class ATLASIntegratedTrainer:
         print(f"\n✓ Phase 2 complete: Allocated heterogeneous ranks for {len(device_configs)} clients")
         return device_configs
     
+    def _phase2_homogeneous_ranks(
+        self, 
+        cluster_labels: Dict[int, int]
+    ) -> Dict[int, Dict]:
+        """
+        Phase 2 (Homogeneous variant): Allocate same LoRA rank for all clients.
+        Used for standard_fl and homogeneous_atlas baselines.
+        
+        Returns: device_configs[client_id] = {device_profile, lora_ranks, cluster_stats}
+        """
+        print("[Phase 2] Allocating homogeneous ranks (same for all clients)...")
+        
+        device_configs = {}
+        homogeneous_rank = 16  # Fixed rank for all clients (adjustable)
+        
+        # Use model-specific LoRA ranks if available
+        model_hparams = get_model_hyperparameters(self.config.model_name)
+        if 'lora_ranks' in model_hparams and model_hparams['lora_ranks']:
+            # Use median rank from model config
+            homogeneous_rank = int(np.median(model_hparams['lora_ranks']))
+        
+        print(f"  Using homogeneous rank: {homogeneous_rank} for all clients")
+        
+        for client_data in self.clients_data:
+            device_type = client_data.device_type
+            cluster_id = client_data.cluster_id
+            client_id = client_data.client_id
+            
+            # Get device profile
+            device_profile = self.device_profiler.profile_device(device_type)
+            
+            # Assign same rank to all layers
+            lora_ranks = [homogeneous_rank] * 6  # 6 layers for DistilBERT/GPT-2
+            
+            # Validate memory constraint
+            is_valid, adapter_mb = self.rank_allocator.validate_memory_constraint(
+                lora_ranks, device_profile
+            )
+            
+            device_configs[client_id] = {
+                'device_profile': device_profile,
+                'lora_ranks': lora_ranks,
+                'cluster_stats': {},  # No cluster complexity for homogeneous
+                'importance_scores': {},
+                'memory_valid': is_valid,
+                'adapter_memory_mb': adapter_mb
+            }
+            
+            client_data.lora_ranks = lora_ranks
+            
+            print(f"  Client {client_id} ({device_type}, cluster {cluster_id}): "
+                  f"ranks={lora_ranks}, memory={adapter_mb:.1f}MB, valid={is_valid}")
+        
+        print(f"\n✓ Phase 2 complete: Allocated homogeneous ranks for {len(device_configs)} clients")
+        return device_configs
+    
     def _phase3_4_training(
         self,
         cluster_labels: Dict[int, int],
@@ -864,7 +929,7 @@ class ATLASIntegratedTrainer:
             task_clusters[cluster_id] = [cid for cid, label in cluster_labels.items() if label == cluster_id]
         
         # Phase 4 (Laplacian) is only used for the full ATLAS method.
-        # For baselines, we skip building the task graph and skip Laplacian updates.
+        # For other modes, we skip building the task graph and Laplacian updates.
         task_graph = None
         laplacian_agg = None
         if mode == 'atlas':
@@ -1035,6 +1100,18 @@ class ATLASIntegratedTrainer:
             if mode == 'local_only':
                 print(f"\n[Round {round_idx+1}] Aggregation skipped (mode=local_only)")
                 print(f"[Round {round_idx+1}] Laplacian skipped (mode=local_only)")
+            elif mode == 'standard_fl':
+                # Standard FL: global FedAvg across all clients (no clustering)
+                print(f"\n[Round {round_idx+1}] Global FedAvg (standard FL)...")
+                all_weights = [
+                    {name: param.data.clone() for name, param in client_models[cid].named_parameters()}
+                    for cid in range(len(client_models))
+                ]
+                avg_weights = self._fedavg_aggregate(all_weights)
+                lora_struct = self._flat_state_to_lora(avg_weights)
+                aggregated_models = {cid: lora_struct for cid in range(len(client_models))}
+                print(f"[Round {round_idx+1}] Laplacian skipped (mode=standard_fl)")
+                updated_models = aggregated_models
             else:
                 # Step 2: Task-aware aggregation (within clusters)
                 print(f"\n[Round {round_idx+1}] Task-aware aggregation...")
@@ -1065,7 +1142,7 @@ class ATLASIntegratedTrainer:
                         task_graph=task_graph
                     )
                 else:
-                    # fedavg_cluster baseline: per-cluster FedAvg only
+                    # Other modes: skip Laplacian (atlas_no_laplacian, fedavg_cluster)
                     print(f"\n[Round {round_idx+1}] Laplacian skipped (mode={mode})")
                     updated_models = aggregated_models
 
@@ -1535,8 +1612,8 @@ if __name__ == "__main__":
     parser.add_argument("--mode", choices=["quick", "full"], default="quick")
     parser.add_argument("-r", "--rounds", type=int, help="Override number of rounds")
     parser.add_argument("--resume", type=str, help="Resume from checkpoint (path to .pkl file)")
-    parser.add_argument("--ablation", choices=["local_only", "fedavg_cluster", "atlas"], default="atlas",
-                       help="Ablation mode: local_only, fedavg_cluster (per-cluster FedAvg), or atlas (full pipeline)")
+    parser.add_argument("--ablation", choices=["atlas", "atlas_no_laplacian", "fedavg_cluster", "standard_fl", "local_only"], default="atlas",
+                       help="Ablation mode: atlas (full), atlas_no_laplacian, fedavg_cluster (task-aware FedAvg), standard_fl (pure FedAvg), local_only")
     parser.add_argument("--lambda-sweep", action="store_true",
                        help="Run lambda sweep over [0.0, 0.01, 0.1, 0.5, 1.0]")
     parser.add_argument("--eta", type=float, help="Override Laplacian regularization strength (lambda)")
