@@ -80,8 +80,6 @@ def main():
             "  • fig3_total_communication.png - Total data transferred",
             "  • fig4_per_client_accuracy.png - Per-client accuracy evolution",
             "  • fig4_client_distribution.png - Client accuracy distribution (boxplot)",
-            "  • fig5_eta_accuracy.png - Eta parameter accuracy convergence",
-            "  • fig5_eta_summary.png - Eta final performance summary",
             "  • fig6_accuracy_vs_time.png - Accuracy vs cumulative training time",
             "  • fig6_time_per_round.png - Avg training time per round",
             "  • fig7_clustering_visualization.png - Client cluster assignments",
@@ -100,7 +98,6 @@ def main():
             "  • table2_cross_model - Cross-model performance",
             "  • table3_ablation - Ablation study details",
             "  • table4_communication - Communication efficiency",
-            "  • table5_eta_sensitivity - Eta parameter analysis",
             "  • table6_statistical_summary - Overall statistics",
         ]
         for table in tables:

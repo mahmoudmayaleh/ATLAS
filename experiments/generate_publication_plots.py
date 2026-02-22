@@ -553,91 +553,6 @@ class PublicationPlotter:
         print(f"  Saved to {figfile}")
         plt.close(fig)
     
-    def plot_eta_parameter_study(self):
-        """Generate Figure 5: Eta Parameter Sensitivity Analysis."""
-        print("Generating Figure 5: Eta Parameter Study...")
-        
-        eta_configs = {
-            'η = 0.0': 'atlas_integrated_full_atlas_00_eta_seed42.json',
-            'η = 0.1': 'atlas_integrated_full_atlas_01_eta_seed42.json',
-            'η = 0.5': 'atlas_integrated_full_atlas_05_eta_seed42.json',
-        }
-        
-        # Accuracy convergence per eta
-        colors_eta = ['#1f77b4', '#ff7f0e', '#2ca02c']
-        fig, ax = plt.subplots(figsize=(6.5, 3.0), constrained_layout=True)
-        
-        for (label, filename), color in zip(eta_configs.items(), colors_eta):
-            result = self.load_result(filename)
-            rounds, accs, f1s, times = self.extract_metrics_per_round(result)
-            if rounds is None:
-                continue
-            
-            ax.plot(rounds, accs * 100, label=label, color=color, marker='o',
-                    markevery=1, linewidth=1.5, markersize=5)
-        
-        ax.set_xlabel('Communication Round', fontweight='bold')
-        ax.set_ylabel('Average Accuracy (%)', fontweight='bold')
-        ax.set_title('Eta Parameter: Accuracy Convergence', fontweight='bold')
-        ax.grid(True, alpha=0.3, linestyle='--', linewidth=0.5)
-        ax.legend(loc='best', framealpha=0.9, fontsize=8)
-        ax.set_xlim(left=1)
-        
-        figfile = self.output_dir / 'fig5_eta_accuracy.png'
-        fig.savefig(figfile, dpi=300)
-        print(f"  Saved to {figfile}")
-        plt.close(fig)
-        
-        # Final accuracy and F1 comparison
-        eta_values = []
-        final_accs = []
-        final_f1s = []
-        
-        for label, filename in eta_configs.items():
-            result = self.load_result(filename)
-            if result is None:
-                continue
-            
-            eta_val = label.split('=')[1].strip()
-            eta_values.append(eta_val)
-            
-            final_round = result['round_metrics'][-1]
-            final_accs.append(final_round.get('avg_accuracy', 0.0) * 100)
-            
-            f1_dict = final_round.get('test_f1', {})
-            avg_f1 = np.mean([v for v in f1_dict.values()]) * 100 if f1_dict else 0
-            final_f1s.append(avg_f1)
-        
-        x = np.arange(len(eta_values))
-        width = 0.35
-        
-        fig, ax = plt.subplots(figsize=(5.5, 3.0), constrained_layout=True)
-        bars1 = ax.bar(x - width/2, final_accs, width, label='Accuracy',
-                       color=COLORS['ATLAS'], alpha=0.8, edgecolor='black')
-        bars2 = ax.bar(x + width/2, final_f1s, width, label='F1 Score',
-                       color=COLORS['ATLAS (No Lap)'], alpha=0.8, edgecolor='black')
-        
-        ax.set_xlabel('Eta Value (η)', fontweight='bold')
-        ax.set_ylabel('Performance (%)', fontweight='bold')
-        ax.set_title('Eta Parameter: Final Performance', fontweight='bold')
-        ax.set_xticks(x)
-        ax.set_xticklabels(eta_values)
-        ax.legend(loc='best', framealpha=0.9)
-        ax.grid(True, alpha=0.3, linestyle='--', linewidth=0.5, axis='y')
-        
-        for bar in bars1:
-            height = bar.get_height()
-            ax.text(bar.get_x() + bar.get_width()/2., height, f'{height:.1f}',
-                    ha='center', va='bottom', fontsize=7)
-        for bar in bars2:
-            height = bar.get_height()
-            ax.text(bar.get_x() + bar.get_width()/2., height, f'{height:.1f}',
-                    ha='center', va='bottom', fontsize=7)
-        
-        figfile = self.output_dir / 'fig5_eta_summary.png'
-        fig.savefig(figfile, dpi=300)
-        print(f"  Saved to {figfile}")
-        plt.close(fig)
     
     def plot_convergence_speed(self):
         """Generate Figure 6: Training Convergence Speed."""
@@ -917,65 +832,81 @@ class PublicationPlotter:
         
         importance_scores = allocations[0]['importance_scores']
         
-        # Prepare data
+        # Prepare data: normalize to relative importance (percent)
         layers = list(importance_scores.keys())
-        scores = [importance_scores[layer] for layer in layers]
-        
-        # Create visualization
-        fig, ax = plt.subplots(figsize=(7.0, 3.5), constrained_layout=True)
-        
-        # Color gradient based on importance
-        colors_gradient = plt.cm.viridis(np.linspace(0.3, 0.9, len(layers)))
-        
-        bars = ax.bar(range(len(layers)), scores, color=colors_gradient,
-                      edgecolor='black', linewidth=1.5, alpha=0.9)
-        
+        raw_scores = np.array([importance_scores[layer] for layer in layers], dtype=float)
+        total = raw_scores.sum() if raw_scores.size else 0.0
+        if total <= 0:
+            print("  Warning: importance scores sum to zero; skipping importance plots")
+            return
+
+        rel = raw_scores / total
+
+        # Create visualization (relative importance in percent) - main view
+        fig, ax = plt.subplots(figsize=(8.0, 3.5), constrained_layout=True)
+        colors_gradient = plt.cm.viridis(np.linspace(0.25, 0.85, len(layers)))
+
+        rel_pct = rel * 100.0
+        bars = ax.bar(range(len(layers)), rel_pct, color=colors_gradient,
+                      edgecolor='black', linewidth=1.0, alpha=0.95)
+
         ax.set_xlabel('Layer', fontweight='bold')
-        ax.set_ylabel('Importance Score', fontweight='bold')
+        ax.set_ylabel('Relative Importance (%)', fontweight='bold')
         ax.set_title('Layer-wise Importance Scores', fontweight='bold')
         ax.set_xticks(range(len(layers)))
-        ax.set_xticklabels(layers, rotation=45, ha='right')
+        ax.set_xticklabels(layers, rotation=45, ha='right', fontsize=9)
         ax.grid(True, alpha=0.3, linestyle='--', linewidth=0.5, axis='y')
-        
-        # Add value labels on bars
-        for i, (bar, score) in enumerate(zip(bars, scores)):
+
+        # Annotate bars with percent values and cap y-axis at 100%
+        for i, (bar, pct) in enumerate(zip(bars, rel_pct)):
             height = bar.get_height()
-            ax.text(bar.get_x() + bar.get_width()/2., height,
-                   f'{score:.3f}', ha='center', va='bottom', fontsize=7)
-        
+            ax.text(bar.get_x() + bar.get_width() / 2., height,
+                    f'{pct:.1f}%', ha='center', va='bottom', fontsize=8)
+
+        ax.set_ylim(0, max(100.0, rel_pct.max() * 1.05))
+
         figfile = self.output_dir / 'fig8_importance_scores.png'
         fig.savefig(figfile, dpi=300)
         print(f"  Saved to {figfile}")
         plt.close(fig)
-        
-        # Also create a pie chart for relative importance
+
+        # Complementary log-scale view of raw scores so small contributors are visible
+        try:
+            fig, ax = plt.subplots(figsize=(8.0, 3.5), constrained_layout=True)
+            eps = 1e-8
+            ax.bar(range(len(layers)), np.log10(raw_scores + eps), color=colors_gradient,
+                   edgecolor='black', linewidth=1.0, alpha=0.95)
+            ax.set_xticks(range(len(layers)))
+            ax.set_xticklabels(layers, rotation=45, ha='right', fontsize=9)
+            ax.set_ylabel('log10(Raw importance + eps)', fontweight='bold')
+            ax.set_title('Layer-wise Importance (log scale)', fontweight='bold')
+            ax.grid(True, alpha=0.3, linestyle='--', linewidth=0.5, axis='y')
+            figfile = self.output_dir / 'fig8_importance_scores_log.png'
+            fig.savefig(figfile, dpi=300)
+            print(f"  Saved to {figfile}")
+            plt.close(fig)
+        except Exception:
+            pass
+
+        # Also create a pie chart for relative importance (show top contributors)
         fig, ax = plt.subplots(figsize=(6.0, 6.0), constrained_layout=True)
-        
-        # Only show top contributors (> 5%)
-        threshold = 0.05
-        major_layers = []
-        major_scores = []
-        other_score = 0
-        
-        for layer, score in zip(layers, scores):
-            if score >= threshold:
-                major_layers.append(layer)
-                major_scores.append(score)
-            else:
-                other_score += score
-        
+
+        threshold = 0.05  # show layers >=5% individually
+        major_layers = [layers[i] for i in range(len(layers)) if rel[i] >= threshold]
+        major_scores = [rel[i] for i in range(len(layers)) if rel[i] >= threshold]
+        other_score = rel[rel < threshold].sum()
         if other_score > 0:
             major_layers.append('Others')
             major_scores.append(other_score)
-        
-        colors_pie = plt.cm.Set3(np.linspace(0, 1, len(major_layers)))
+
+        colors_pie = plt.cm.Set3(np.linspace(0, 1, max(1, len(major_layers))))
         wedges, texts, autotexts = ax.pie(major_scores, labels=major_layers,
                                            autopct='%1.1f%%', startangle=90,
                                            colors=colors_pie,
                                            textprops={'fontsize': 10, 'fontweight': 'bold'})
-        
+
         ax.set_title('Relative Layer Importance', fontweight='bold', fontsize=12)
-        
+
         figfile = self.output_dir / 'fig8_importance_distribution.png'
         fig.savefig(figfile, dpi=300)
         print(f"  Saved to {figfile}")
@@ -991,7 +922,6 @@ class PublicationPlotter:
         self.plot_model_comparison()
         self.plot_communication_efficiency()
         self.plot_clustering_analysis()
-        self.plot_eta_parameter_study()
         self.plot_convergence_speed()
         self.plot_clustering_visualization()
         self.plot_importance_scores()

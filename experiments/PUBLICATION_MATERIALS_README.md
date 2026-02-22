@@ -110,23 +110,7 @@ python generate_results_tables.py
 
 **Usage in Paper**: Methodology or heterogeneity handling section.
 
----
 
-### Figure 5: Eta Parameter Study (`fig5_eta_parameter_study.pdf`)
-**Purpose**: Sensitivity analysis of the eta (η) parameter.
-
-**Subplots**:
-- (a) Convergence for different η values (0.0, 0.1, 0.5)
-- (b) Final performance comparison
-
-**Shows**:
-- Impact of adaptation rate
-- Optimal parameter selection
-- Trade-offs in adaptation
-
-**Usage in Paper**: Parameter analysis or ablation section.
-
----
 
 ### Figure 6: Convergence Speed (`fig6_convergence_speed.pdf`)
 **Purpose**: Analyzes training efficiency and convergence speed.
@@ -200,19 +184,7 @@ python generate_results_tables.py
 
 **Usage**: Communication efficiency analysis.
 
----
 
-### Table V: Eta Sensitivity (`table5_eta_sensitivity`)
-**Content**: Impact of eta parameter on performance
-
-**Columns**:
-- Eta value
-- Description
-- Accuracy and F1 scores
-- Number of rounds
-- Training time
-
-**Usage**: Parameter sensitivity analysis.
 
 ---
 
@@ -365,10 +337,6 @@ Examples:
 - `atlas_gpt2_standard_fl_seed123_r10.json`
 - `atlas_Qwen_Qwen2.5-0.5B_atlas_seed42_r10.json`
 
-Special files:
-- `atlas_integrated_full_atlas_00_eta_seed42.json` (eta=0.0)
-- `atlas_integrated_full_atlas_01_eta_seed42.json` (eta=0.1)
-- `atlas_integrated_full_atlas_05_eta_seed42.json` (eta=0.5)
 
 ## 🐛 Troubleshooting
 

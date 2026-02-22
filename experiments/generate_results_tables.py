@@ -355,57 +355,7 @@ class ResultsTableGenerator:
         print(f"  Saved LaTeX: {latex_file}")
         
         return df
-    
-    def generate_eta_sensitivity_table(self):
-        """
-        Table V: Eta Parameter Sensitivity Analysis
-        """
-        print("Generating Table V: Eta Parameter Sensitivity...")
-        
-        configs = [
-            ('η = 0.0', 'atlas_integrated_full_atlas_00_eta_seed42.json', 'No adaptation'),
-            ('η = 0.1', 'atlas_integrated_full_atlas_01_eta_seed42.json', 'Default value'),
-            ('η = 0.5', 'atlas_integrated_full_atlas_05_eta_seed42.json', 'High adaptation'),
-        ]
-        
-        data = []
-        
-        for eta_label, filename, description in configs:
-            result = self.load_result(filename)
-            metrics = self.extract_final_metrics(result)
-            
-            if metrics:
-                data.append({
-                    'Eta (η)': eta_label,
-                    'Description': description,
-                    'Avg. Accuracy (%)': f"{metrics['avg_accuracy']:.2f}",
-                    'Std. Dev. (%)': f"{metrics['std_accuracy']:.2f}",
-                    'Avg. F1 (%)': f"{metrics['avg_f1']:.2f}",
-                    'Rounds': metrics['num_rounds'],
-                    'Time (min)': f"{metrics['total_time_min']:.1f}",
-                })
-        
-        df = pd.DataFrame(data)
-        
-        # Save as CSV
-        csv_file = self.output_dir / 'table5_eta_sensitivity.csv'
-        df.to_csv(csv_file, index=False)
-        print(f"  Saved CSV: {csv_file}")
-        
-        # Generate LaTeX
-        latex = self._generate_latex_table(
-            df,
-            caption="Sensitivity Analysis: Impact of Eta Parameter on ATLAS Performance",
-            label="tab:eta_sensitivity",
-            column_format="l|p{3cm}|cc|c|cc"
-        )
-        
-        latex_file = self.output_dir / 'table5_eta_sensitivity.tex'
-        with open(latex_file, 'w') as f:
-            f.write(latex)
-        print(f"  Saved LaTeX: {latex_file}")
-        
-        return df
+
     
     def generate_statistical_summary_table(self):
         """
@@ -527,7 +477,6 @@ class ResultsTableGenerator:
         self.generate_cross_model_table()
         self.generate_ablation_table()
         self.generate_communication_table()
-        self.generate_eta_sensitivity_table()
         self.generate_statistical_summary_table()
         
         print("\n" + "="*60)
