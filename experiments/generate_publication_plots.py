@@ -15,7 +15,8 @@ from matplotlib import rcParams
 
 # Set IEEE-quality plot parameters
 rcParams['font.family'] = 'serif'
-rcParams['font.serif'] = ['Times New Roman']
+# Prefer Times New Roman but fall back to common serif fonts to avoid missing-font warnings
+rcParams['font.serif'] = ['Times New Roman', 'DejaVu Serif', 'Georgia', 'Linux Libertine']
 rcParams['font.size'] = 10
 rcParams['axes.labelsize'] = 11
 rcParams['axes.titlesize'] = 12
@@ -80,10 +81,15 @@ class PublicationPlotter:
         with open(filepath, 'r') as f:
             return json.load(f)
     
-    def extract_metrics_per_round(self, result: Dict) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-        """Extract accuracy, F1, and time metrics per round."""
+    def extract_metrics_per_round(self, result: Dict) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+        """Extract accuracy, F1, and time metrics per round.
+
+        Returns four numpy arrays: rounds, accuracies, f1_scores, times.
+        If `result` is None or invalid, returns four None values so callers can
+        safely detect missing data.
+        """
         if result is None:
-            return None, None, None
+            return None, None, None, None
         
         rounds = []
         accuracies = []
