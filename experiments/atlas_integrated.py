@@ -464,7 +464,8 @@ class ATLASIntegratedTrainer:
         layer_importances = {}  # Store per-client layer importance
 
         # Collect both per-client averaged gradients and per-batch gradient samples
-        grad_samples = []
+        grad_samples = []  # List to hold per-batch gradient samples
+        grad_history = []  # List to hold per-batch gradient history
         for client_data in self.clients_data:
             print(f"  Client {client_data.client_id} ({client_data.task_name})...", end=" ")
 
@@ -532,7 +533,7 @@ class ATLASIntegratedTrainer:
         except Exception as e:
             print(f"[Phase 1] Warning: gradient extractor fit failed: {e}")
 
-        fingerprints = {}
+        fingerprints = {}  # Dictionary to hold client fingerprints
         for cid, raw in raw_gradients.items():
             try:
                 fp = self.gradient_extractor.extract(raw)
@@ -736,8 +737,8 @@ class ATLASIntegratedTrainer:
             for layer_key, norms in layer_norms.items():
                 layer_importance[layer_key] = float(np.mean(norms))
             
-            # Return gradient dict and importance scores
-            return averaged_grads, layer_importance
+            # Return gradient dict, importance scores, and per-batch gradients
+            return averaged_grads, layer_importance, grad_history
         else:
             # Fallback: random raw gradient dict
             return {'fallback': torch.from_numpy(np.random.randn(self.config.fingerprint_dim)).float()}, {}, []
@@ -842,7 +843,9 @@ class ATLASIntegratedTrainer:
                 
                 # Add classifier importance if present in raw_importance
                 if raw_importance is not None and 'classifier' in raw_importance:
-                
+                    # incorporate classifier importance as an extra key
+                    importance_scores['classifier'] = float(raw_importance.get('classifier', 0.0))
+
                 # Scale by cluster difficulty
                 for key in importance_scores:
                     importance_scores[key] *= (0.5 + 0.5 * cluster_complexity)
@@ -963,7 +966,7 @@ class ATLASIntegratedTrainer:
         Phase 3 & 4: Split federated learning + Laplacian regularization.
         Real training with heterogeneous LoRA + task-aware aggregation + personalization.
         """
-        print("[Phase 3&4] Initializing split FL clients and server...")
+        print("[Phase 2] Profiling devices and allocating ranks...")  # Start of Phase 2
 
         mode = getattr(self.config, 'mode', 'atlas')
         
