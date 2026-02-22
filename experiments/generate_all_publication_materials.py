@@ -68,15 +68,27 @@ def main():
     print("✅ ALL PUBLICATION MATERIALS GENERATED SUCCESSFULLY!")
     print("="*70)
     print("\nGenerated Files:")
-    print("\nFigures (PDF + PNG):")
+    print("\nFigures (PNG):")
     if not args.skip_plots:
         figures = [
-            "  • fig1_ablation_study.pdf/png - Ablation study showing component impact",
-            "  • fig2_model_comparison.pdf/png - Cross-model performance comparison",
-            "  • fig3_communication_efficiency.pdf/png - Communication cost analysis",
-            "  • fig4_clustering_analysis.pdf/png - Client heterogeneity handling",
-            "  • fig5_eta_parameter_study.pdf/png - Eta parameter sensitivity",
-            "  • fig6_convergence_speed.pdf/png - Training convergence analysis",
+            "  • fig1_ablation_accuracy.png - Ablation accuracy convergence",
+            "  • fig1_ablation_f1.png - Ablation F1 convergence",
+            "  • fig2_model_accuracy.png - Model architecture accuracy comparison",
+            "  • fig2_model_baseline.png - ATLAS vs Standard FL baselines",
+            "  • fig3_cumulative_communication.png - Cumulative communication",
+            "  • fig3_communication_efficiency.png - Communication efficiency",
+            "  • fig3_total_communication.png - Total data transferred",
+            "  • fig4_per_client_accuracy.png - Per-client accuracy evolution",
+            "  • fig4_client_distribution.png - Client accuracy distribution (boxplot)",
+            "  • fig5_eta_accuracy.png - Eta parameter accuracy convergence",
+            "  • fig5_eta_summary.png - Eta final performance summary",
+            "  • fig6_accuracy_vs_time.png - Accuracy vs cumulative training time",
+            "  • fig6_time_per_round.png - Avg training time per round",
+            "  • fig7_clustering_visualization.png - Client cluster assignments",
+            "  • fig7_cluster_distribution.png - Cluster size distribution",
+            "  • fig8_importance_scores.png - Layer importance scores",
+            "  • fig8_importance_distribution.png - Relative layer importance (pie)",
+            "  • fig9_cluster_map.png - 2D client embedding colored by cluster",
         ]
         for fig in figures:
             print(fig)

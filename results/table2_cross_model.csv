@@ -1,0 +1,7 @@
+Model,Method,Accuracy (%),F1 Score (%),Comm. (MB),Time (min)
+DistilBERT,ATLAS,80.06,77.31,1734.6,36.8
+DistilBERT,Standard FL,80.51,77.58,744.6,36.4
+GPT-2,ATLAS,78.57 ± 0.41,71.61 ± 1.29,1846.4,76.9
+GPT-2,Standard FL,79.15 ± 0.12,73.34 ± 0.26,558.3,79.3
+Qwen-0.5B,ATLAS,82.34 ± 0.46,79.34 ± 0.61,3569.8,262.2
+Qwen-0.5B,Standard FL,82.55 ± 0.12,79.88 ± 0.47,991.6,261.1

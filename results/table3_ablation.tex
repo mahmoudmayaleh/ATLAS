@@ -1,0 +1,17 @@
+\begin{table}[!t]
+\renewcommand{\arraystretch}{1.2}
+\caption{Ablation Study: Impact of ATLAS Components on Performance}
+\label{tab:ablation}
+\centering
+\small
+\begin{tabular}{l|p{4cm}|cc|cc|c}
+\hline\hline
+Configuration & Description & Accuracy (\%) & Δ Acc. & F1 Score (\%) & Δ F1 & Comm. Efficiency \\
+\hline
+ATLAS (Full) & Full system & 80.06 & — & 77.31 & — & 0.046 \\
+w/o Laplacian & Without graph regularization & 80.06 & +0.00 & 77.31 & +0.00 & 0.046 \\
+w/o Split Training & Without parameter splitting & 80.51 & +0.45 & 77.58 & +0.27 & 0.085 \\
+w/o Clustering & Standard federated learning & 80.51 & +0.45 & 77.58 & +0.27 & 0.108 \\
+\hline\hline
+\end{tabular}
+\end{table}

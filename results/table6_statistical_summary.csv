@@ -1,0 +1,3 @@
+Category,Experiments,Avg. Acc. (%),Avg. F1 (%),Avg. Comm. (MB),Avg. Time (min)
+ATLAS Methods,6,80.08 ± 1.87,75.13 ± 4.03,2402.2,132.0
+Standard FL,6,80.51 ± 1.67,76.22 ± 3.28,733.8,132.7
