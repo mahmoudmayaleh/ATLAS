@@ -463,6 +463,8 @@ class ATLASIntegratedTrainer:
         raw_gradients = {}
         layer_importances = {}  # Store per-client layer importance
 
+        # Collect both per-client averaged gradients and per-batch gradient samples
+        grad_samples = []
         for client_data in self.clients_data:
             print(f"  Client {client_data.client_id} ({client_data.task_name})...", end=" ")
 
@@ -496,10 +498,14 @@ class ATLASIntegratedTrainer:
                 if model.score.bias is not None:
                     torch.nn.init.zeros_(model.score.bias)
 
-            # Extract raw gradient vector and layer importance
-            raw_grad, layer_imp = self._extract_fingerprint(model, client_data.train_dataset)
+            # Extract raw gradient vector, layer importance, and per-batch grads
+            raw_grad, layer_imp, per_batch_grads = self._extract_fingerprint(model, client_data.train_dataset)
             raw_gradients[client_data.client_id] = raw_grad
             layer_importances[client_data.client_id] = layer_imp
+            # Append per-batch gradient dicts (if any) so PCA has more samples
+            if per_batch_grads:
+                for pg in per_batch_grads:
+                    grad_samples.append(pg)
 
             del model
             torch.cuda.empty_cache() if torch.cuda.is_available() else None
@@ -517,9 +523,10 @@ class ATLASIntegratedTrainer:
                         shape = 'unknown'
                 print(f"✓ raw grad shape: {shape}")
         
-        # Fit PCA on collected raw gradients and compute fingerprints
-        print(f"\n[Phase 1] Fitting fingerprint PCA on {len(raw_gradients)} samples...")
-        grad_list = [g for g in raw_gradients.values()]
+        # Fit PCA on collected raw gradients (prefer per-batch samples if available)
+        n_samples_msg = len(grad_samples) if grad_samples else len(raw_gradients)
+        print(f"\n[Phase 1] Fitting fingerprint PCA on {n_samples_msg} samples...")
+        grad_list = grad_samples if grad_samples else [g for g in raw_gradients.values()]
         try:
             self.gradient_extractor.fit(grad_list)
         except Exception as e:
@@ -589,11 +596,12 @@ class ATLASIntegratedTrainer:
 
         return cluster_labels, fingerprints, clustering_metrics, layer_importances
     
-    def _extract_fingerprint(self, model: nn.Module, dataset: Subset) -> Tuple[Dict, Dict]:
+    def _extract_fingerprint(self, model: nn.Module, dataset: Subset) -> Tuple[Dict, Dict, list]:
         """Extract gradient fingerprint from a client's local training.
         
         Returns:
-            (averaged_grads, layer_importance): gradient dict and per-layer importance scores
+            (averaged_grads, layer_importance, per_batch_grads): gradient dict, per-layer importance scores,
+            and a list of per-batch gradient dicts collected during fingerprinting (may be empty).
         """
         # Clear cache before starting
         if torch.cuda.is_available():
@@ -732,7 +740,7 @@ class ATLASIntegratedTrainer:
             return averaged_grads, layer_importance
         else:
             # Fallback: random raw gradient dict
-            return {'fallback': torch.from_numpy(np.random.randn(self.config.fingerprint_dim)).float()}, {}
+            return {'fallback': torch.from_numpy(np.random.randn(self.config.fingerprint_dim)).float()}, {}, []
     
     def _phase2_rank_allocation(
         self, 
@@ -796,23 +804,44 @@ class ATLASIntegratedTrainer:
             # Compute per-layer importance scores from ACTUAL gradient norms
             cluster_complexity = cluster_stats.get(cluster_id, {}).get('normalized_complexity', 1.0)
             
-            if self.config.use_importance_allocation and client_id in layer_importances:
-                # Use actual per-layer gradient norms from fingerprinting
-                raw_importance = layer_importances[client_id]
+            if self.config.use_importance_allocation:
+                # Prefer actual per-layer gradient norms from fingerprinting
+                raw_importance = layer_importances.get(client_id)
+                if raw_importance is None:
+                    # Attempt to use cluster-average per-layer importance as a non-disruptive fallback
+                    cluster_client_ids = [cid for cid, lbl in cluster_labels.items() if lbl == cluster_id]
+                    # Gather available importances in the same cluster
+                    gathered = [layer_importances[cid] for cid in cluster_client_ids if cid in layer_importances]
+                    if gathered:
+                        # Average per-layer values across gathered clients
+                        avg_importance = {}
+                        keys = set().union(*[set(d.keys()) for d in gathered])
+                        for k in keys:
+                            vals = [d.get(k, 0.0) for d in gathered]
+                            avg_importance[k] = float(np.mean(vals)) if vals else 0.0
+                        raw_importance = avg_importance
+                        importance_source = 'cluster_average'
+                    else:
+                        raw_importance = None
                 importance_scores = {}
                 
-                # Map layer names to layer indices
-                for i in range(6):  # DistilBERT has 6 transformer layers
-                    layer_key = f'layer_{i}'
-                    if layer_key in raw_importance:
-                        importance_scores[layer_key] = raw_importance[layer_key]
-                    else:
-                        # Fallback: heuristic (later layers more important)
+                if raw_importance is not None:
+                    # Map layer names to layer indices
+                    for i in range(6):  # DistilBERT has 6 transformer layers
+                        layer_key = f'layer_{i}'
+                        if layer_key in raw_importance:
+                            importance_scores[layer_key] = raw_importance[layer_key]
+                        else:
+                            # Fallback: heuristic (later layers more important)
+                            importance_scores[layer_key] = 0.5 + (i / 6.0)
+                else:
+                    # No importance info available: fall back to deterministic heuristic
+                    for i in range(6):
+                        layer_key = f'layer_{i}'
                         importance_scores[layer_key] = 0.5 + (i / 6.0)
                 
-                # Add classifier importance
-                if 'classifier' in raw_importance:
-                    importance_scores['classifier'] = raw_importance['classifier']
+                # Add classifier importance if present in raw_importance
+                if raw_importance is not None and 'classifier' in raw_importance:
                 
                 # Scale by cluster difficulty
                 for key in importance_scores:
