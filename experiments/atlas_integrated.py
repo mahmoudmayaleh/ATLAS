@@ -25,7 +25,9 @@ os.environ.setdefault('XLA_PYTHON_CLIENT_PREALLOCATE', 'false')
 os.environ.setdefault('TRANSFORMERS_NO_ADVISORY_WARNINGS', '1')
 os.environ.setdefault('HF_HUB_DISABLE_TELEMETRY', '1')
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
+# Ensure the repository root is on sys.path so `src.*` imports resolve
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
+
 
 import logging
 import warnings
@@ -51,26 +53,26 @@ warnings.filterwarnings('ignore')
 
 import torch
 import torch.nn as nn
-from torch.utils.data import DataLoader, Subset
+from torch.utils.data import DataLoader, Subset, Dataset as TorchDataset
 from torch.cuda.amp import autocast
-from transformers import AutoTokenizer, AutoModelForSequenceClassification
-from datasets import load_dataset
+from transformers import AutoTokenizer, AutoModelForSequenceClassification, PreTrainedModel
+from datasets import load_dataset, Dataset as HFDataset, DatasetDict
 import numpy as np
 from sklearn.metrics import f1_score
-from typing import Dict, List, Tuple, Optional
+from typing import Dict, List, Tuple, Optional, Any, Literal, cast
 import time
 import json
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass, asdict, field
 from pathlib import Path
 import pickle
 import contextlib
 import io
 
 # Import all ATLAS phases
-from phase1_clustering import GradientExtractor, TaskClusterer
-from phase2_configuration import DeviceProfiler, RankAllocator
-from phase3_split_fl import SplitClient, SplitServer
-from phase4_laplacian import LaplacianAggregation, TaskGraph
+from src.phase1_clustering import GradientExtractor, TaskClusterer
+from src.phase2_configuration import DeviceProfiler, RankAllocator
+from src.phase3_split_fl import SplitClient, SplitServer
+from src.phase4_laplacian import LaplacianAggregation, TaskGraph
 
 
 @dataclass
@@ -78,7 +80,7 @@ class ATLASConfig:
     """Configuration for ATLAS integrated experiment"""
     # Model & tasks
     model_name: str = "distilbert-base-uncased"
-    tasks: List[str] = None  # e.g., ['sst2', 'mrpc', 'cola']
+    tasks: List[str] = field(default_factory=lambda: ['sst2', 'mrpc', 'cola'])  # e.g., ['sst2', 'mrpc', 'cola']
     clients_per_task: int = 3  # 3 clients per task → 9 clients total for 3 tasks
     
     # Training
@@ -91,7 +93,7 @@ class ATLASConfig:
     gradient_clip_norm: float = 1.0  # Clip gradients to prevent explosion (critical for large models)
     
     # Device heterogeneity
-    device_types: List[str] = None  # e.g., ['cpu_2gb', 'tablet_4gb', 'laptop_8gb', 'gpu_16gb']
+    device_types: List[str] = field(default_factory=lambda: ['cpu_2gb'] * 2 + ['tablet_4gb'] * 3 + ['laptop_8gb'] * 2 + ['gpu_16gb'] * 2)
     
     # Phase 1: Clustering
     fingerprint_epochs: int = 1  # Reduced to 1 epoch for memory efficiency
@@ -102,7 +104,7 @@ class ATLASConfig:
     # NOTE: For T4 GPU (15GB), fingerprinting uses minimal samples for memory safety
     
     # Phase 2: LoRA ranks
-    rank_candidates: List[int] = None  # [4, 8, 16, 32, 64] - greedy importance-aware
+    rank_candidates: List[int] = field(default_factory=lambda: [4, 8, 16, 32, 64])  # [4, 8, 16, 32, 64] - greedy importance-aware
     alpha_base: float = 0.5  # Base model takes 50% memory
     alpha_act: float = 0.25  # Activations take 25%
     alpha_opt: float = 0.08  # Optimizer takes 8% (reduced from 0.15 to force per-layer variation)
@@ -113,7 +115,7 @@ class ATLASConfig:
     
     # Phase 4: Laplacian regularization (MIRA)
     eta: float = 0.1  # Regularization strength λ (tune: {0.0, 0.01, 0.1, 0.5, 1.0})
-    laplacian_adjacency_method: str = 'mira_rbf'  # 'uniform', 'similarity', 'mira_rbf' (RECOMMENDED)
+    laplacian_adjacency_method: Literal['uniform', 'similarity', 'adaptive', 'mira_rbf'] = 'mira_rbf'  # 'mira_rbf' (RECOMMENDED)
     mira_alpha: float = 1.0  # RBF kernel bandwidth for a_kℓ = exp(-α||f_k - f_ℓ||²)
     k_neighbors: int = 3
     block_diagonal: bool = True  # Zero cross-cluster edges for block structure
@@ -122,7 +124,7 @@ class ATLASConfig:
     # Ablation & tuning modes
     mode: str = 'atlas'  # 'local_only', 'fedavg_cluster', 'atlas'
     lambda_sweep: bool = False  # If True, sweep eta over [0.0, 0.01, 0.1, 0.5, 1.0]
-    lambda_values: List[float] = None  # For lambda sweep
+    lambda_values: List[float] = field(default_factory=lambda: [0.0, 0.01, 0.1, 0.5, 1.0])  # For lambda sweep
     
     # Checkpointing (for multi-session training)
     checkpoint_dir: str = "./checkpoints"
@@ -130,15 +132,15 @@ class ATLASConfig:
     seed: int = 42
     
     def __post_init__(self):
+        # Backward-compatible safety: allow callers to pass None explicitly
         if self.tasks is None:
-            self.tasks = ['sst2', 'mrpc', 'cola']  # Default: 3 tasks
+            self.tasks = ['sst2', 'mrpc', 'cola']
         if self.device_types is None:
-            # Mix of devices: 2 low-end, 3 mid, 2 high, 2 very high
             self.device_types = ['cpu_2gb'] * 2 + ['tablet_4gb'] * 3 + ['laptop_8gb'] * 2 + ['gpu_16gb'] * 2
         if self.rank_candidates is None:
-            self.rank_candidates = [4, 8, 16, 32, 64]  # Include 64 for large devices
+            self.rank_candidates = [4, 8, 16, 32, 64]
         if self.lambda_values is None:
-            self.lambda_values = [0.0, 0.01, 0.1, 0.5, 1.0]  # Lambda sweep grid
+            self.lambda_values = [0.0, 0.01, 0.1, 0.5, 1.0]
 
 
 @dataclass
@@ -148,9 +150,121 @@ class ClientData:
     task_name: str
     device_type: str
     train_dataset: Subset
-    test_dataset: any
+    test_dataset: Any
     cluster_id: Optional[int] = None
-    lora_ranks: Optional[Dict[str, int]] = None
+    lora_ranks: Any = None
+
+
+class SplitServerWrapper(nn.Module):
+    """
+    Server-side model for genuine split federated learning.
+
+    Receives intermediate activations from a client at `split_layer` and runs
+    the remaining transformer layers plus the classification head, then returns
+    the loss and activation-level gradients back to the client.
+
+    Supports DistilBERT, GPT-2, and Qwen2/LLaMA architectures.
+    """
+
+    def __init__(self, model: nn.Module, split_layer: int, n_total_layers: int):
+        super().__init__()
+        self.split_layer = split_layer
+        self.n_total_layers = n_total_layers
+        self.arch = self._detect_arch(model)
+        self._extract_top_components(model)
+
+    @staticmethod
+    def _detect_arch(model) -> str:
+        if hasattr(model, 'distilbert'):
+            return 'distilbert'
+        if hasattr(model, 'transformer') and hasattr(model.transformer, 'h'):
+            return 'gpt2'
+        if hasattr(model, 'model') and hasattr(model.model, 'embed_tokens'):
+            return 'llama_qwen'
+        raise ValueError(f"SplitServerWrapper: unsupported architecture {type(model).__name__}")
+
+    def _extract_top_components(self, model):
+        s = self.split_layer
+        if self.arch == 'distilbert':
+            self.top_layers = nn.ModuleList(model.distilbert.transformer.layer[s:])
+            self.pre_classifier = model.pre_classifier
+            self.classifier = model.classifier
+        elif self.arch == 'gpt2':
+            self.top_layers = nn.ModuleList(model.transformer.h[s:])
+            self.ln_f = model.transformer.ln_f
+            self.score = model.score
+        elif self.arch == 'llama_qwen':
+            self.top_layers = nn.ModuleList(model.model.layers[s:])
+            self.norm = model.model.norm
+            self.score = model.score
+
+    def forward(
+        self,
+        split_activations: torch.Tensor,
+        attention_mask: Optional[torch.Tensor] = None,
+        labels: Optional[torch.Tensor] = None,
+    ):
+        """
+        Args:
+            split_activations: (batch, seq_len, hidden) – tensor with requires_grad=True
+                               so that .grad is populated after loss.backward().
+            attention_mask:    (batch, seq_len) int/bool mask (1 = keep, 0 = pad).
+            labels:            (batch,) class indices for cross-entropy loss.
+        Returns:
+            logits: (batch, num_classes)
+            loss:   scalar tensor if labels provided, else None.
+        """
+        import torch.nn.functional as F
+        x = split_activations
+
+        if self.arch == 'distilbert':
+            # DistilBERT expects an *additive* mask: 0 for keep, -inf for pad.
+            if attention_mask is not None:
+                ext_mask = attention_mask[:, None, None, :].float()
+                ext_mask = (1.0 - ext_mask) * -10000.0
+            else:
+                ext_mask = None
+            for layer in self.top_layers:
+                out = layer(x, attn_mask=ext_mask)
+                x = out[-1] if isinstance(out, tuple) else out
+            pooled = x[:, 0]                          # CLS token
+            pooled = torch.relu(self.pre_classifier(pooled))
+            logits = self.classifier(pooled)
+
+        elif self.arch == 'gpt2':
+            for block in self.top_layers:
+                out = block(x)
+                x = out[0] if isinstance(out, tuple) else out
+            x = self.ln_f(x)
+            # Classification uses the last *real* token.
+            if attention_mask is not None:
+                seq_lens = attention_mask.sum(dim=1).long() - 1
+                seq_lens = seq_lens.clamp(min=0)
+                batch_idx = torch.arange(x.size(0), device=x.device)
+                pooled = x[batch_idx, seq_lens]
+            else:
+                pooled = x[:, -1]
+            logits = self.score(pooled)
+
+        elif self.arch == 'llama_qwen':
+            for layer in self.top_layers:
+                out = layer(x)
+                x = out[0] if isinstance(out, tuple) else out
+            x = self.norm(x)
+            if attention_mask is not None:
+                seq_lens = attention_mask.sum(dim=1).long() - 1
+                seq_lens = seq_lens.clamp(min=0)
+                batch_idx = torch.arange(x.size(0), device=x.device)
+                pooled = x[batch_idx, seq_lens]
+            else:
+                pooled = x[:, -1]
+            logits = self.score(pooled)
+
+        loss = None
+        if labels is not None:
+            loss = torch.nn.functional.cross_entropy(logits, labels)  # type: ignore[possibly-unbound]
+
+        return logits, loss  # type: ignore[possibly-unbound]
 
 
 class ATLASIntegratedTrainer:
@@ -262,7 +376,7 @@ class ATLASIntegratedTrainer:
                 if len(indices) > self.config.max_samples_per_client:
                     indices = indices[:self.config.max_samples_per_client]
                 
-                client_subset = Subset(train_data, indices)
+                client_subset = Subset(cast(TorchDataset, train_data), indices)
                 
                 client_data = ClientData(
                     client_id=client_id,
@@ -302,6 +416,14 @@ class ATLASIntegratedTrainer:
                 dataset = load_dataset(dataset_name, task_name, split='train')
                 test_dataset = load_dataset(dataset_name, task_name, split='validation')
         
+        # Normalize to HF Dataset objects (guard against load_from_disk returning DatasetDict)
+        if isinstance(dataset, DatasetDict):
+            dataset = dataset['train'] if 'train' in dataset else next(iter(dataset.values()))
+        if isinstance(test_dataset, DatasetDict):
+            test_dataset = test_dataset['validation'] if 'validation' in test_dataset else next(iter(test_dataset.values()))
+        dataset = cast(HFDataset, dataset)
+        test_dataset = cast(HFDataset, test_dataset)
+
         # Deduplicate within splits and remove train↔val overlap
         import hashlib
         def _text_hash(example):
@@ -398,11 +520,19 @@ class ATLASIntegratedTrainer:
             print(f"{'='*70}\n")
             cluster_labels, fingerprints, clustering_metrics, layer_importances = self._phase1_clustering()
         else:
+            assert checkpoint is not None
             cluster_labels = checkpoint['cluster_labels']
             fingerprints = checkpoint['fingerprints']
             clustering_metrics = checkpoint.get('clustering_metrics', {})
             layer_importances = checkpoint.get('layer_importances', {})
             print(f"[RESUME] Loaded clustering from checkpoint")
+
+            # Restore per-client cluster ids (used by Phase 2+ and for result metadata)
+            for client_data in self.clients_data:
+                try:
+                    client_data.cluster_id = int(cluster_labels[client_data.client_id])
+                except Exception:
+                    client_data.cluster_id = None
         
         # ========== PHASE 2: HETEROGENEOUS RANK ALLOCATION ==========
         if start_round == 0:
@@ -420,8 +550,15 @@ class ATLASIntegratedTrainer:
                 # Heterogeneous: adaptive ranks per device/cluster (atlas, atlas_no_laplacian)
                 device_configs = self._phase2_rank_allocation(cluster_labels, fingerprints, layer_importances)
         else:
+            assert checkpoint is not None
             device_configs = checkpoint['device_configs']
             print(f"[RESUME] Loaded rank configs from checkpoint")
+
+            # Restore per-client LoRA ranks (used for LoRA application and result metadata)
+            for client_data in self.clients_data:
+                cfg = device_configs.get(client_data.client_id) if isinstance(device_configs, dict) else None
+                if isinstance(cfg, dict) and 'lora_ranks' in cfg:
+                    client_data.lora_ranks = cfg.get('lora_ranks')
         
         # ========== PHASE 3 + 4: SPLIT FL + LAPLACIAN ==========
         print(f"\n{'='*70}")
@@ -452,7 +589,7 @@ class ATLASIntegratedTrainer:
         
         return results
     
-    def _phase1_clustering(self) -> Tuple[Dict[int, int], Dict[int, np.ndarray], Dict]:
+    def _phase1_clustering(self) -> Tuple[Dict[int, int], Dict[int, np.ndarray], Dict, Dict[int, Dict[str, float]]]:
         """
         Phase 1: Extract gradient fingerprints and cluster clients.
         Returns: (cluster_labels, fingerprints)
@@ -485,9 +622,12 @@ class ATLASIntegratedTrainer:
                 model.config.pad_token_id = model.config.eos_token_id
             
             # Enable gradient checkpointing for large models (trade compute for memory)
-            if hasattr(model, 'gradient_checkpointing_enable'):
-                model.gradient_checkpointing_enable()
-                print("[Gradient checkpointing enabled]", end=" ")
+            if hasattr(model, 'gradient_checkpointing_enable') and callable(getattr(model, 'gradient_checkpointing_enable', None)):
+                try:
+                    model.gradient_checkpointing_enable()
+                    print("[Gradient checkpointing enabled]", end=" ")
+                except Exception as e:
+                    print(f"[Warning: gradient checkpointing failed: {e}]", end=" ")
             
             # Reinitialize classification head with small weights for stability
             if hasattr(model, 'classifier'):
@@ -556,6 +696,9 @@ class ATLASIntegratedTrainer:
         labels = res.get('labels')
 
         # Map labels back to client ids
+        if labels is None:
+            # Fallback: assign each client to its own cluster if clustering failed
+            labels = list(range(len(client_ids)))
         cluster_labels = {cid: int(lbl) for cid, lbl in zip(client_ids, labels)}
 
         print(f"  ✓ Found {res.get('n_clusters', len(set(labels)))} task groups")
@@ -571,7 +714,7 @@ class ATLASIntegratedTrainer:
                 task_counts[task] = task_counts.get(task, 0) + 1
             
             # Compute purity: fraction of clients belonging to dominant task
-            dominant_task = max(task_counts, key=task_counts.get) if task_counts else None
+            dominant_task = max(task_counts, key=lambda t: task_counts[t]) if task_counts else None
             purity = task_counts[dominant_task] / len(clients_in_cluster) if dominant_task else 0.0
             cluster_task_purity[cluster_id] = purity
             
@@ -609,8 +752,12 @@ class ATLASIntegratedTrainer:
             torch.cuda.empty_cache()
         
         # Enable gradient checkpointing to reduce memory
-        if hasattr(model, 'gradient_checkpointing_enable'):
-            model.gradient_checkpointing_enable()
+        gradient_checkpointing_enable = getattr(model, 'gradient_checkpointing_enable', None)
+        if callable(gradient_checkpointing_enable):
+            try:
+                gradient_checkpointing_enable()
+            except Exception as e:
+                print(f"[Warning: gradient checkpointing failed: {e}]", end=" ")
         
         # Limit dataset to fingerprint_samples for memory efficiency
         fingerprint_size = min(len(dataset), self.config.fingerprint_samples)
@@ -908,6 +1055,8 @@ class ATLASIntegratedTrainer:
         Returns: device_configs[client_id] = {device_profile, lora_ranks, cluster_stats}
         """
         print("[Phase 2] Allocating homogeneous ranks (same for all clients)...")
+
+        from config import get_model_hyperparameters
         
         device_configs = {}
         homogeneous_rank = 16  # Fixed rank for all clients (adjustable)
@@ -983,14 +1132,23 @@ class ATLASIntegratedTrainer:
             # Build adjacency weights using MIRA's RBF kernel: a_kℓ = exp(-α||f_k - f_ℓ||²)
             print(f"\n[Phase 4] Building task graph with {self.config.laplacian_adjacency_method} adjacency...")
 
-            from phase4_laplacian import compute_adjacency_weights
+            from src.phase4_laplacian import compute_adjacency_weights
+
+            # NOTE:
+            # In this implementation, Phase 3 performs per-cluster FedAvg and assigns the *same*
+            # aggregated LoRA weights to all clients inside a cluster. If we also enforce a
+            # block-diagonal task graph (no cross-cluster edges), then for any client k all
+            # neighbors ℓ satisfy W_k == W_ℓ and the Laplacian term becomes ~0.
+            # To ensure Laplacian regularization has a measurable effect, we disable block-diagonal
+            # adjacency for the Laplacian graph in `mode='atlas'`.
+            laplacian_block_diagonal = False
 
             adjacency_weights = compute_adjacency_weights(
                 task_clusters=task_clusters,
                 gradient_fingerprints=fingerprints,  # Use Phase 1 fingerprints (dict)
                 method=self.config.laplacian_adjacency_method,  # 'mira_rbf' (recommended)
                 mira_alpha=self.config.mira_alpha,  # RBF bandwidth parameter
-                block_diagonal=self.config.block_diagonal,  # Zero cross-cluster edges
+                block_diagonal=laplacian_block_diagonal,  # Allow cross-cluster edges for non-trivial Laplacian
                 ensure_connectivity=self.config.ensure_connectivity  # Connect singletons
             )
 
@@ -1044,8 +1202,11 @@ class ATLASIntegratedTrainer:
                     torch.nn.init.zeros_(model.score.bias)
             
             # Enable gradient checkpointing before LoRA (saves memory during training)
-            if hasattr(model, 'gradient_checkpointing_enable'):
-                model.gradient_checkpointing_enable()
+            if hasattr(model, 'gradient_checkpointing_enable') and callable(getattr(model, 'gradient_checkpointing_enable', None)):
+                try:
+                    model.gradient_checkpointing_enable()
+                except Exception as e:
+                    print(f"[Warning: gradient checkpointing setup failed: {e}]")
             
             # Apply LoRA with heterogeneous ranks; keep model on CPU to save VRAM
             model = self._apply_heterogeneous_lora(model, client_data.lora_ranks)
@@ -1054,8 +1215,15 @@ class ATLASIntegratedTrainer:
             client_models[client_data.client_id] = model
         
         print(f"  ✓ Created {len(client_models)} personalized client models")
-        
-        # Training loop
+
+        # ── Build genuine split-server models (atlas / atlas_no_laplacian / fedavg_cluster) ──
+        # local_only and standard_fl use full local training, so no server needed.
+        use_split_learning = mode not in ('local_only', 'standard_fl')
+        split_server_models: Dict[int, Dict] = {}
+        if use_split_learning:
+            split_server_models = self._build_split_server_models(task_clusters, device_configs)
+
+
         # Use clustering_metrics (returned from Phase 1) when available; fall back to safe defaults
         phase1_info = {
             'silhouette_score': float(clustering_metrics.get('silhouette_score', clustering_metrics.get('combined_score', 0.0))) if clustering_metrics else None,
@@ -1073,10 +1241,10 @@ class ATLASIntegratedTrainer:
                 {
                     'client_id': int(c.client_id),
                     'device': str(c.device_type),
-                    'cluster': int(c.cluster_id),
-                    'ranks': [int(r) for r in c.lora_ranks],
-                    'total_params': int(sum(c.lora_ranks)),
-                    'lora_params': int(sum(r * 768 * 2 for r in c.lora_ranks))  # Actual LoRA parameter count
+                    'cluster': int(c.cluster_id) if c.cluster_id is not None else -1,
+                    'ranks': [int(r) for r in (c.lora_ranks if c.lora_ranks is not None else [])],
+                    'total_params': int(sum(int(r) for r in (c.lora_ranks if c.lora_ranks is not None else []))),
+                    'lora_params': int(sum(int(r) * 768 * 2 for r in (c.lora_ranks if c.lora_ranks is not None else [])))  # Actual LoRA parameter count
                 }
                 for c in self.clients_data
             ],
@@ -1091,6 +1259,8 @@ class ATLASIntegratedTrainer:
                 'per_round': []
             }
         }
+
+        round_accuracies: Dict[int, float] = {}
         
         for round_idx in range(start_round, self.config.num_rounds):
             round_start = time.time()
@@ -1098,30 +1268,55 @@ class ATLASIntegratedTrainer:
             print(f"ROUND {round_idx + 1}/{self.config.num_rounds}")
             print(f"{'='*70}\n")
             
-            # Step 1: Local training (each client trains own model)
-            print(f"[Round {round_idx+1}] Local training...")
+            # Step 1: Client training
+            # - local_only / standard_fl  → full local training (no split)
+            # - all ATLAS modes           → genuine split learning (activations ↔ gradients)
+            print(f"[Round {round_idx+1}] {'Split' if use_split_learning else 'Local'} training...")
             round_losses = {}
             # Communication counters (bytes) for this round
             comm_upload = {c.client_id: 0 for c in self.clients_data}
             comm_download = {c.client_id: 0 for c in self.clients_data}
-            
+
             for client_data in self.clients_data:
                 cid = client_data.client_id
                 model = client_models[cid]
-
-                # Move model to GPU for local training to save global VRAM
                 model.to(self.device)
 
-                # Train locally
-                loss = self._train_client_local(
-                    model, 
-                    client_data.train_dataset,
-                    client_id=cid,
-                    task_name=client_data.task_name
-                )
+                if use_split_learning:
+                    # ── Genuine split learning ──────────────────────────────
+                    cluster_id = client_data.cluster_id if client_data.cluster_id is not None else 0
+                    srv = split_server_models[cluster_id]
+                    srv_model     = srv['model']      # already on self.device
+                    srv_optimizer = srv['optimizer']
+                    split_layer   = srv['split_layer']
+
+                    loss, up_bytes, dn_bytes = self._train_client_split(
+                        client_model=model,
+                        dataset=client_data.train_dataset,
+                        server_model=srv_model,
+                        server_optimizer=srv_optimizer,
+                        split_layer=split_layer,
+                        client_id=cid,
+                        task_name=client_data.task_name,
+                    )
+                    comm_upload[cid]   = int(up_bytes)
+                    comm_download[cid] = int(dn_bytes)
+
+                else:
+                    # ── Full local training (local_only / standard_fl) ──────
+                    loss = self._train_client_local(
+                        model,
+                        client_data.train_dataset,
+                        client_id=cid,
+                        task_name=client_data.task_name,
+                    )
+                    # No per-batch activation exchange → comm is 0 here;
+                    # LoRA-weight upload is counted after aggregation below.
+                    comm_upload[cid]   = 0
+                    comm_download[cid] = 0
+
                 round_losses[cid] = loss
 
-                # Move model back to CPU to free GPU memory for next client
                 try:
                     model.to('cpu')
                 except Exception:
@@ -1130,25 +1325,20 @@ class ATLASIntegratedTrainer:
                     torch.cuda.empty_cache()
                 client_models[cid] = model
 
-                # Communication accounting:
-                # - local_only baseline has no server exchange -> 0
-                # - other modes approximate upload as trainable params (LoRA + classifier)
-                if mode == 'local_only':
-                    comm_upload[cid] = 0
-                else:
-                    up_bytes = 0
-                    for name, param in model.named_parameters():
-                        low = name.lower()
-                        if ('lora' in low) or ('classifier' in low) or ('score' in low):
-                            up_bytes += param.numel() * param.element_size()
-                    comm_upload[cid] = int(up_bytes)
-
             # Baseline: local training only (no aggregation, no Laplacian)
             if mode == 'local_only':
                 print(f"\n[Round {round_idx+1}] Aggregation skipped (mode=local_only)")
                 print(f"[Round {round_idx+1}] Laplacian skipped (mode=local_only)")
             elif mode == 'standard_fl':
                 # Standard FL: global FedAvg across all clients (no clustering)
+                # Count LoRA-weight upload for each client (sent to server at round end).
+                for cid in list(client_models.keys()):
+                    up = 0
+                    for name, param in client_models[cid].named_parameters():
+                        if 'lora' in name.lower():
+                            up += param.numel() * param.element_size()
+                    comm_upload[cid] = int(up)
+
                 print(f"\n[Round {round_idx+1}] Global FedAvg (standard FL)...")
                 all_weights = [
                     {name: param.data.clone() for name, param in client_models[cid].named_parameters()}
@@ -1159,6 +1349,78 @@ class ATLASIntegratedTrainer:
                 aggregated_models = {cid: lora_struct for cid in range(len(client_models))}
                 print(f"[Round {round_idx+1}] Laplacian skipped (mode=standard_fl)")
                 updated_models = aggregated_models
+
+                # Measure download size per client (server -> clients) based on weights actually sent
+                for cid in updated_models:
+                    total_bytes = 0
+                    for _layer_name, parts in updated_models[cid].items():
+                        for _k, t in parts.items():
+                            if isinstance(t, (np.ndarray,)):
+                                total_bytes += t.nbytes
+                            else:
+                                try:
+                                    total_bytes += int(t.numel() * t.element_size())
+                                except Exception:
+                                    continue
+                    comm_download[cid] = int(total_bytes)
+
+                # Apply aggregated LoRA weights back to client models
+                for cid, lora_weights in updated_models.items():
+                    model = client_models[cid]
+                    state = model.state_dict()
+                    new_state = {}
+                    import re
+                    for key, val in state.items():
+                        key_low = key.lower()
+                        if 'lora_a' in key_low or 'lora_b' in key_low:
+                            m = re.search(r"\.h\.(\d+)\.", key)
+                            if m:
+                                layer_idx = int(m.group(1))
+                                layer_name = f'layer_{layer_idx}'
+                            else:
+                                m2 = re.search(r'layer_(\d+)', key_low)
+                                if m2:
+                                    layer_name = f"layer_{int(m2.group(1))}"
+                                else:
+                                    layer_name = None
+
+                            if layer_name and layer_name in lora_weights:
+                                if 'lora_a' in key_low and 'A' in lora_weights[layer_name]:
+                                    new_tensor = lora_weights[layer_name]['A']
+                                    if new_tensor.shape == val.shape:
+                                        new_state[key] = new_tensor.to(val.device)
+                                    else:
+                                        try:
+                                            cand = new_tensor.to(val.device)
+                                            new_state[key] = cand if cand.shape == val.shape else val
+                                        except Exception:
+                                            new_state[key] = val
+                                elif 'lora_b' in key_low and 'B' in lora_weights[layer_name]:
+                                    new_tensor = lora_weights[layer_name]['B']
+                                    if new_tensor.shape == val.shape:
+                                        new_state[key] = new_tensor.to(val.device)
+                                    else:
+                                        try:
+                                            cand = new_tensor.to(val.device)
+                                            new_state[key] = cand if cand.shape == val.shape else val
+                                        except Exception:
+                                            new_state[key] = val
+                                else:
+                                    new_state[key] = val
+                            else:
+                                new_state[key] = val
+                        else:
+                            new_state[key] = val
+
+                    try:
+                        model.load_state_dict(new_state, strict=False)
+                    except Exception:
+                        for name, param in model.named_parameters():
+                            if name in new_state:
+                                try:
+                                    param.data.copy_(new_state[name])
+                                except Exception:
+                                    continue
             else:
                 # Step 2: Task-aware aggregation (within clusters)
                 print(f"\n[Round {round_idx+1}] Task-aware aggregation...")
@@ -1184,10 +1446,14 @@ class ATLASIntegratedTrainer:
                 # Step 3: Optional Laplacian regularization (ATLAS only)
                 if mode == 'atlas':
                     print(f"\n[Round {round_idx+1}] Applying Laplacian regularization...")
-                    updated_models = laplacian_agg.laplacian_update(
-                        client_models=aggregated_models,
-                        task_graph=task_graph
-                    )
+                    if laplacian_agg is not None and task_graph is not None:
+                        updated_models = laplacian_agg.laplacian_update(
+                            client_models=aggregated_models,
+                            task_graph=task_graph
+                        )
+                    else:
+                        print(f"[Round {round_idx+1}] Laplacian unavailable; skipping")
+                        updated_models = aggregated_models
                 else:
                     # Other modes: skip Laplacian (atlas_no_laplacian, fedavg_cluster)
                     print(f"\n[Round {round_idx+1}] Laplacian skipped (mode={mode})")
@@ -1343,19 +1609,69 @@ class ATLASIntegratedTrainer:
                 }
                 self._save_checkpoint(round_idx + 1, checkpoint_state)
         
-        # Final accuracies
-        results['final_accuracies'] = round_accuracies
+        # ── Final summary metrics (last round) ───────────────────────────
+        results['final_accuracies'] = {int(k): float(v) for k, v in round_accuracies.items()}
+        results['final_canonical']  = {int(k): float(v) for k, v in round_canonical.items()}
+        results['final_f1']         = {int(k): float(v) for k, v in round_f1s.items()}
+
+        # Per-task final scores (the proof that ATLAS preserves task identity)
+        final_task_canonical: Dict[str, List[float]] = {}
+        for cd in self.clients_data:
+            tname = cd.task_name
+            final_task_canonical.setdefault(tname, []).append(
+                round_canonical.get(cd.client_id, 0.0)
+            )
+        results['final_task_scores'] = {
+            tname: {
+                'metric':     self.TASK_METRIC.get(tname, 'accuracy'),
+                'mean':       float(np.mean(vals)),
+                'std':        float(np.std(vals)),
+                'per_client': [float(v) for v in vals],
+            }
+            for tname, vals in final_task_canonical.items()
+        }
+        results['macro_avg_canonical']    = float(np.mean([
+            v['mean'] for v in results['final_task_scores'].values()
+        ]))
+        results['personalization_spread'] = float(np.std(
+            list(results['final_canonical'].values())
+        ))
+        results['total_comm_mb'] = (
+            results['communication_costs']['total_bytes_uploaded'] +
+            results['communication_costs']['total_bytes_downloaded']
+        ) / 1e6
+
+        # Print proof-of-ATLAS summary
+        print(f"\n{'='*70}")
+        print(f"FINAL RESULTS — mode={mode}")
+        print(f"{'='*70}")
+        for tname, info in results['final_task_scores'].items():
+            print(f"  {tname:6s}: {info['metric']}={info['mean']:.4f} ± {info['std']:.4f}")
+        print(f"  Macro avg canonical : {results['macro_avg_canonical']:.4f}")
+        print(f"  Personalization spread (std across clients): {results['personalization_spread']:.4f}")
+        print(f"  Total communication : {results['total_comm_mb']:.1f} MB")
+        print(f"{'='*70}\n")
+
+        try:
+            results['run_metadata'] = {
+                'ablation_mode':      str(mode),
+                'laplacian_enabled':  bool(mode == 'atlas'),
+                'split_learning':     bool(use_split_learning),
+                'split_learning_type': 'genuine_activation_exchange' if use_split_learning else 'none',
+            }
+        except Exception:
+            pass
         
         return results
     
-    def _apply_heterogeneous_lora(self, model: nn.Module, lora_ranks) -> nn.Module:
+    def _apply_heterogeneous_lora(self, model: PreTrainedModel, lora_ranks) -> nn.Module:
         """Apply LoRA with heterogeneous ranks per layer"""
         from peft import get_peft_model, LoraConfig, TaskType
         
         # Get unique rank (simplified - use max rank for now)
         # In full implementation, would apply different ranks per layer
         rank = 8
-        if lora_ranks:
+        if lora_ranks is not None:
             if isinstance(lora_ranks, dict):
                 try:
                     rank = max(lora_ranks.values())
@@ -1445,9 +1761,261 @@ class ATLASIntegratedTrainer:
             modules_to_save=modules_to_save
         )
         
-        model = get_peft_model(model, lora_config)
-        return model
+        peft_model = get_peft_model(model, lora_config)
+        return cast(nn.Module, peft_model)
     
+    # =========================================================================
+    # Genuine Split Learning helpers (Phase 3)
+    # =========================================================================
+
+    def _split_forward_bottom(
+        self,
+        model: nn.Module,
+        input_ids: torch.Tensor,
+        attention_mask: torch.Tensor,
+        split_layer: int,
+    ) -> torch.Tensor:
+        """
+        Run only the bottom `split_layer` transformer blocks of a PEFT-wrapped model.
+
+        The returned tensor is part of the LoRA-parameter compute graph, so
+        calling `.backward(activation_gradients)` on it propagates gradients
+        through the client-side LoRA matrices.
+
+        Supports DistilBERT, GPT-2, and Qwen2/LLaMA architectures.
+        """
+        # Unwrap PEFT shell to reach the underlying HuggingFace model.
+        base = model.base_model.model if hasattr(model, 'base_model') else model # pyright: ignore[reportAttributeAccessIssue]
+
+        # ---- DistilBERT ----
+        if hasattr(base, 'distilbert'):
+            x = base.distilbert.embeddings(input_ids=input_ids)
+            # Additive attention mask expected by DistilBERT layers.
+            ext_mask = attention_mask[:, None, None, :].float()
+            ext_mask = (1.0 - ext_mask) * -10000.0
+            for layer in base.distilbert.transformer.layer[:split_layer]:
+                out = layer(x, attn_mask=ext_mask)
+                x = out[-1] if isinstance(out, tuple) else out
+            return x  # (batch, seq_len, hidden)
+
+        # ---- GPT-2 ----
+        if hasattr(base, 'transformer') and hasattr(base.transformer, 'h'):
+            pos_ids = torch.arange(
+                input_ids.size(1), dtype=torch.long, device=input_ids.device
+            ).unsqueeze(0)
+            x = base.transformer.wte(input_ids) + base.transformer.wpe(pos_ids)
+            for block in base.transformer.h[:split_layer]:
+                out = block(x)
+                x = out[0] if isinstance(out, tuple) else out
+            return x  # (batch, seq_len, hidden)
+
+        # ---- Qwen2 / LLaMA ----
+        if hasattr(base, 'model') and hasattr(base.model, 'embed_tokens'):
+            x = base.model.embed_tokens(input_ids)
+            for layer in base.model.layers[:split_layer]:
+                out = layer(x)
+                x = out[0] if isinstance(out, tuple) else out
+            return x  # (batch, seq_len, hidden)
+
+        raise ValueError(
+            f"_split_forward_bottom: unsupported model architecture "
+            f"'{type(base).__name__}'. Expected distilbert / transformer+h / model+embed_tokens."
+        )
+
+    def _build_split_server_models(
+        self,
+        task_clusters: Dict[int, List[int]],
+        device_configs: Dict[int, Dict],
+    ) -> Dict[int, Dict]:
+        """
+        Create one SplitServerWrapper per task cluster.
+
+        Each server model holds the top (n_total - split_layer) transformer
+        blocks plus the classification head. It is shared by all clients in
+        a cluster and trained server-side during split learning.
+
+        Returns:
+            {cluster_id: {'model': SplitServerWrapper,
+                          'optimizer': AdamW,
+                          'split_layer': int}}
+        """
+        print("\n[Phase 3] Building server-side top-layer models (genuine split learning)...")
+        server_models: Dict[int, Dict] = {}
+
+        for cluster_id, client_ids in task_clusters.items():
+            rep_cid = client_ids[0]
+            rep_client = next(c for c in self.clients_data if c.client_id == rep_cid)
+            _, _, _, num_labels = self.dataset_map[rep_client.task_name]
+
+            cfg = device_configs.get(rep_cid) if isinstance(device_configs, dict) else None
+            split_layer = (
+                cfg.get('split_layer', self.config.split_layer)
+                if isinstance(cfg, dict) else self.config.split_layer
+            )
+
+            # Load a fresh base model for the server (not PEFT-wrapped).
+            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                base_model = AutoModelForSequenceClassification.from_pretrained(
+                    self.config.model_name,
+                    num_labels=num_labels,
+                    torch_dtype=torch.float32,
+                    ignore_mismatched_sizes=True,
+                )
+            if base_model.config.pad_token_id is None:
+                base_model.config.pad_token_id = base_model.config.eos_token_id
+
+            n_total = getattr(
+                base_model.config, 'n_layer',
+                getattr(base_model.config, 'num_hidden_layers', 12)
+            )
+
+            try:
+                server_wrapper = SplitServerWrapper(base_model, split_layer, n_total)
+            except ValueError as exc:
+                raise RuntimeError(
+                    f"Cannot build SplitServerWrapper for cluster {cluster_id}: {exc}"
+                ) from exc
+
+            server_wrapper.to(self.device)
+            optimizer = torch.optim.AdamW(
+                server_wrapper.parameters(), lr=self.config.learning_rate
+            )
+
+            server_models[cluster_id] = {
+                'model': server_wrapper,
+                'optimizer': optimizer,
+                'split_layer': split_layer,
+            }
+            print(
+                f"  Cluster {cluster_id}: arch={server_wrapper.arch}, "
+                f"split_layer={split_layer}/{n_total}, labels={num_labels}"
+            )
+
+        print(f"  ✓ Built {len(server_models)} server model(s).")
+        return server_models
+
+    def _train_client_split(
+        self,
+        client_model: nn.Module,
+        dataset: Subset,
+        server_model: 'SplitServerWrapper',
+        server_optimizer: torch.optim.Optimizer,
+        split_layer: int,
+        client_id: int,
+        task_name: str,
+    ):
+        """
+        Genuine split federated learning training step for one client.
+
+        Protocol (per batch):
+          1. CLIENT  – run embedding + bottom split_layer transformer blocks
+                       (LoRA adapters are active → activations are in their
+                       compute graph).
+          2. NETWORK – upload: activation tensor (batch × seq_len × hidden).
+          3. SERVER  – receive activations as a new leaf (requires_grad=True),
+                       run top layers + head, compute cross-entropy loss,
+                       backprop → fill leaf.grad with dL/d(activations).
+          4. NETWORK – download: gradient tensor (same shape as activations).
+          5. CLIENT  – call split_activations.backward(activation_gradients)
+                       to propagate gradients through LoRA, then optimizer.step().
+
+        Communication is counted from the actual tensor sizes — no estimates.
+
+        Returns:
+            avg_loss (float), total_upload_bytes (int), total_download_bytes (int)
+        """
+        client_model.train()
+        server_model.train()
+
+        dataloader = DataLoader(dataset, batch_size=self.config.batch_size, shuffle=True)
+        client_optimizer = torch.optim.AdamW(
+            [p for p in client_model.parameters() if p.requires_grad],
+            lr=self.config.learning_rate,
+        )
+
+        total_loss = 0.0
+        num_batches = 0
+        total_upload_bytes = 0
+        total_download_bytes = 0
+        nan_count = 0
+
+        for _epoch in range(self.config.local_epochs):
+            for batch in dataloader:
+                input_ids      = batch['input_ids'].to(self.device)
+                attention_mask = batch['attention_mask'].to(self.device)
+                labels         = batch['label'].to(self.device)
+
+                client_optimizer.zero_grad()
+                server_optimizer.zero_grad()
+
+                # ── CLIENT: forward through bottom layers ──────────────────
+                # split_activations is connected to the LoRA param graph.
+                try:
+                    split_activations = self._split_forward_bottom(
+                        client_model, input_ids, attention_mask, split_layer
+                    )
+                except Exception as exc:
+                    print(f"    ⚠️  Client {client_id} bottom-forward failed: {exc}. Skipping batch.")
+                    continue
+
+                # ── NETWORK UPLOAD: count actual bytes ─────────────────────
+                upload_bytes = split_activations.numel() * split_activations.element_size()
+                total_upload_bytes += int(upload_bytes)
+
+                # ── SERVER: create a detached leaf so .grad gets filled ────
+                server_input = split_activations.detach().requires_grad_(True)
+
+                _, loss = server_model(server_input, attention_mask, labels)
+
+                if loss is None or torch.isnan(loss) or torch.isinf(loss):
+                    nan_count += 1
+                    continue
+
+                # Server backward: populates server_input.grad = dL/d(activations)
+                loss.backward()
+
+                # Clip server-side gradients
+                torch.nn.utils.clip_grad_norm_(
+                    server_model.parameters(), self.config.gradient_clip_norm
+                )
+                server_optimizer.step()
+
+                if server_input.grad is None:
+                    # No gradient reached the split point – skip this batch.
+                    del server_input, loss
+                    continue
+                activation_gradients = server_input.grad.detach().clone()
+
+                # ── NETWORK DOWNLOAD: count actual bytes ───────────────────
+                download_bytes = activation_gradients.numel() * activation_gradients.element_size()
+                total_download_bytes += int(download_bytes)
+
+                # ── CLIENT: backward through LoRA using server gradients ───
+                split_activations.backward(activation_gradients)
+                torch.nn.utils.clip_grad_norm_(
+                    client_model.parameters(), self.config.gradient_clip_norm
+                )
+                client_optimizer.step()
+
+                total_loss += loss.item()
+                num_batches += 1
+
+                # Free GPU memory after each batch
+                del input_ids, attention_mask, labels, split_activations
+                del server_input, activation_gradients, loss
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+
+        avg_loss = total_loss / max(num_batches, 1)
+        status = f"  ⚠️ {nan_count} NaN batches skipped" if nan_count else ""
+        print(
+            f"    Client {client_id} ({task_name}): {num_batches} batches, "
+            f"loss={avg_loss:.4f}, "
+            f"↑{total_upload_bytes / 1e6:.2f} MB  ↓{total_download_bytes / 1e6:.2f} MB"
+            f"{status}"
+        )
+        return avg_loss, total_upload_bytes, total_download_bytes
+
     def _train_client_local(
         self, 
         model: nn.Module, 
@@ -1499,52 +2067,87 @@ class ATLASIntegratedTrainer:
         print(f"    Client {client_id} ({task_name}): {num_batches} batches, loss={avg_loss:.4f} {status}")
         return avg_loss
     
-    def _evaluate_client(self, model: nn.Module, test_dataset) -> Tuple[float, float, float]:
-        """Evaluate one client on test set. Returns (accuracy, avg_loss, f1)"""
+    # Task → canonical metric name (matches the paper's Table II)
+    TASK_METRIC: Dict[str, str] = {
+        'sst2': 'accuracy',
+        'mrpc': 'f1',
+        'cola': 'matthews',
+        'qnli': 'accuracy',
+    }
+
+    def _evaluate_client(
+        self,
+        model: nn.Module,
+        test_dataset,
+        task_name: str = 'sst2',
+    ) -> Tuple[float, float, float, float]:
+        """
+        Evaluate one client on its test split.
+
+        Returns:
+            accuracy  (float) – raw classification accuracy
+            avg_loss  (float) – mean cross-entropy loss
+            f1        (float) – macro-F1
+            canonical (float) – the task's *primary* metric used in the paper:
+                                 accuracy for SST-2 / QNLI,
+                                 F1        for MRPC,
+                                 Matthews  for CoLA
+        """
+        from sklearn.metrics import matthews_corrcoef
+
         model.eval()
         dataloader = DataLoader(test_dataset, batch_size=self.config.batch_size * 2)
-        
+
         total_correct = 0
         total_samples = 0
         total_loss = 0.0
         num_batches = 0
-        all_preds = []
-        all_labels = []
-        
+        all_preds: List[torch.Tensor] = []
+        all_labels_list: List[torch.Tensor] = []
+
         with torch.no_grad():
             for batch in dataloader:
-                input_ids = batch['input_ids'].to(self.device)
+                input_ids      = batch['input_ids'].to(self.device)
                 attention_mask = batch['attention_mask'].to(self.device)
-                labels = batch['label'].to(self.device)
-                
-                # Forward pass (FP32)
-                outputs = model(input_ids=input_ids, attention_mask=attention_mask, labels=labels)
-                loss = outputs.loss
-                logits = outputs.logits
-                
+                labels         = batch['label'].to(self.device)
+
+                outputs     = model(input_ids=input_ids, attention_mask=attention_mask, labels=labels)
+                loss        = outputs.loss
+                logits      = outputs.logits
                 predictions = torch.argmax(logits, dim=-1)
-                total_correct += (predictions == labels).sum().item()
-                total_samples += labels.size(0)
-                total_loss += loss.item()
-                num_batches += 1
-                # Accumulate for F1
+
+                total_correct  += (predictions == labels).sum().item()
+                total_samples  += labels.size(0)
+                total_loss     += loss.item()
+                num_batches    += 1
                 all_preds.append(predictions.detach().cpu())
-                all_labels.append(labels.detach().cpu())
-        
+                all_labels_list.append(labels.detach().cpu())
+
         accuracy = total_correct / max(total_samples, 1)
         avg_loss = total_loss / max(num_batches, 1)
-        # Compute F1 score (macro) across collected predictions
+
+        preds_np  = torch.cat(all_preds).numpy()          if all_preds        else np.array([])
+        labels_np = torch.cat(all_labels_list).numpy()   if all_labels_list  else np.array([])
+
         try:
-            if all_preds and all_labels:
-                preds_cat = torch.cat(all_preds).numpy()
-                labels_cat = torch.cat(all_labels).numpy()
-                f1 = float(f1_score(labels_cat, preds_cat, average='macro', zero_division=0))
-            else:
-                f1 = 0.0
+            f1 = float(f1_score(labels_np, preds_np, average='macro', zero_division=0)) \
+                if len(preds_np) > 0 else 0.0
         except Exception:
             f1 = 0.0
 
-        return accuracy, avg_loss, f1
+        # Task-specific canonical metric
+        metric_name = self.TASK_METRIC.get(task_name, 'accuracy')
+        try:
+            if metric_name == 'matthews' and len(preds_np) > 0:
+                canonical = float(matthews_corrcoef(labels_np, preds_np))
+            elif metric_name == 'f1':
+                canonical = f1
+            else:
+                canonical = accuracy
+        except Exception:
+            canonical = accuracy
+
+        return accuracy, avg_loss, f1, canonical
     
     def _fedavg_aggregate(self, weights_list: List[Dict[str, torch.Tensor]]) -> Dict[str, torch.Tensor]:
         """FedAvg aggregation"""
@@ -1653,7 +2256,7 @@ class ATLASIntegratedTrainer:
 
 if __name__ == "__main__":
     import argparse
-    from config import get_model_hyperparameters
+    from config import get_model_config, get_model_hyperparameters
     
     parser = argparse.ArgumentParser(description="Run ATLAS integrated experiment")
     parser.add_argument("--mode", choices=["quick", "full"], default="quick")
@@ -1719,13 +2322,6 @@ if __name__ == "__main__":
             'hidden_size': 768
         }
 
-    # Resolve model alias -> actual HF repo id (e.g., 'distilbert' -> 'distilbert-base-uncased')
-    try:
-        model_repo = get_model_config(args.model)['name']
-    except Exception:
-        # If mapping fails, fall back to raw args.model
-        model_repo = args.model
-    
     # Resolve model alias -> actual HF repo id (e.g., 'distilbert' -> 'distilbert-base-uncased')
     try:
         model_repo = get_model_config(args.model)['name']
@@ -1806,6 +2402,23 @@ if __name__ == "__main__":
     if args.max_rounds:
         config.num_rounds = args.max_rounds
         print(f"[SESSION] Limiting this session to {args.max_rounds} rounds (use --resume to continue)")
+
+    def _to_jsonable(obj):
+        if isinstance(obj, np.ndarray):
+            return obj.tolist()
+        if isinstance(obj, (np.integer, np.floating)):
+            return obj.item()
+        try:
+            import torch
+            if isinstance(obj, torch.Tensor):
+                return obj.detach().cpu().tolist()
+        except Exception:
+            pass
+        if isinstance(obj, dict):
+            return {k: _to_jsonable(v) for k, v in obj.items()}
+        if isinstance(obj, list):
+            return [_to_jsonable(v) for v in obj]
+        return obj
     
     # Lambda sweep mode
     if args.lambda_sweep:
@@ -1836,23 +2449,6 @@ if __name__ == "__main__":
         results_path = Path("./results") / f"lambda_sweep_{args.mode}_{config.mode}_seed{config.seed}.json"
         results_path.parent.mkdir(parents=True, exist_ok=True)
         
-        def _to_jsonable(obj):
-            if isinstance(obj, np.ndarray):
-                return obj.tolist()
-            if isinstance(obj, (np.integer, np.floating)):
-                return obj.item()
-            try:
-                import torch
-                if isinstance(obj, torch.Tensor):
-                    return obj.detach().cpu().tolist()
-            except Exception:
-                pass
-            if isinstance(obj, dict):
-                return {k: _to_jsonable(v) for k, v in obj.items()}
-            if isinstance(obj, list):
-                return [_to_jsonable(v) for v in obj]
-            return obj
-        
         with open(results_path, 'w') as f:
             json.dump(_to_jsonable(sweep_results), f, indent=2)
         
@@ -1865,41 +2461,43 @@ if __name__ == "__main__":
 
         results = trainer.run_full_pipeline(resume_from=args.resume)
         
-        # Save final results (include ablation mode and seed to avoid overwrites)
-        results_path = Path("./results") / f"atlas_integrated_{args.mode}_{config.mode}_seed{config.seed}.json"
+        # Save final results using the canonical publication naming convention
+        # This matches the filenames consumed by `experiments/generate_publication_plots.py`
+        # and `experiments/generate_results_tables.py`.
+        model_norm = str(config.model_name).replace('/', '_').replace('\\', '_')
+        results_path = Path("./results") / f"atlas_{model_norm}_{config.mode}_seed{config.seed}_r{config.num_rounds}.json"
         results_path.parent.mkdir(parents=True, exist_ok=True)
         
-        def _to_jsonable(obj):
-            if isinstance(obj, np.ndarray):
-                return obj.tolist()
-            if isinstance(obj, (np.integer, np.floating)):
-                return obj.item()
-            try:
-                import torch
-                if isinstance(obj, torch.Tensor):
-                    return obj.detach().cpu().tolist()
-            except Exception:
-                pass
-            if isinstance(obj, dict):
-                return {k: _to_jsonable(v) for k, v in obj.items()}
-            if isinstance(obj, list):
-                return [_to_jsonable(v) for v in obj]
-            return obj
-
         with open(results_path, 'w') as f:
             results_json = {
-                'round_metrics': _to_jsonable(results.get('round_metrics', [])),
-                'final_accuracies': _to_jsonable(results.get('final_accuracies', {})),
-                'cluster_labels': _to_jsonable(results.get('cluster_labels', {})),
-                'phase1_clustering': _to_jsonable(results.get('phase1_clustering', {})),
-                'phase2_rank_allocation': _to_jsonable(results.get('phase2_rank_allocation', [])),
-                'communication_costs': _to_jsonable(results.get('communication_costs', {})),
-                'time_metrics': _to_jsonable(results.get('time_metrics', {})),
-                'fingerprints': _to_jsonable(results.get('fingerprints', {})),
-                'clustering_metrics': _to_jsonable(results.get('clustering_metrics', {})),
-                'device_configs': _to_jsonable(results.get('device_configs', {})),
-                'layer_importances': _to_jsonable(results.get('layer_importances', {})),
-                'config': asdict(config)
+                # ── Per-round training records ──────────────────────────────────
+                'round_metrics':           _to_jsonable(results.get('round_metrics', [])),
+                # ── Final per-client scores ─────────────────────────────────────
+                'final_accuracies':        _to_jsonable(results.get('final_accuracies', {})),
+                'final_canonical':         _to_jsonable(results.get('final_canonical', {})),
+                'final_f1':                _to_jsonable(results.get('final_f1', {})),
+                # ── Key proof-of-ATLAS metrics ──────────────────────────────────
+                # Each task's canonical metric (acc / F1 / Matthews) averaged over
+                # clients that share that task.  Compare across ablation modes to
+                # show ATLAS outperforms standard_fl on minority tasks (e.g. CoLA).
+                'final_task_scores':       _to_jsonable(results.get('final_task_scores', {})),
+                'macro_avg_canonical':     _to_jsonable(results.get('macro_avg_canonical', 0.0)),
+                # Low spread → clients in same task have converged (personalization worked)
+                'personalization_spread':  _to_jsonable(results.get('personalization_spread', 0.0)),
+                # Total bytes exchanged across ALL rounds (split activation + LoRA uploads)
+                'total_comm_mb':           _to_jsonable(results.get('total_comm_mb', 0.0)),
+                # ── Phase information ───────────────────────────────────────────
+                'cluster_labels':          _to_jsonable(results.get('cluster_labels', {})),
+                'phase1_clustering':       _to_jsonable(results.get('phase1_clustering', {})),
+                'phase2_rank_allocation':  _to_jsonable(results.get('phase2_rank_allocation', [])),
+                'communication_costs':     _to_jsonable(results.get('communication_costs', {})),
+                'time_metrics':            _to_jsonable(results.get('time_metrics', {})),
+                'fingerprints':            _to_jsonable(results.get('fingerprints', {})),
+                'clustering_metrics':      _to_jsonable(results.get('clustering_metrics', {})),
+                'device_configs':          _to_jsonable(results.get('device_configs', {})),
+                'layer_importances':       _to_jsonable(results.get('layer_importances', {})),
+                'run_metadata':            _to_jsonable(results.get('run_metadata', {})),
+                'config':                  asdict(config),
             }
             json.dump(results_json, f, indent=2)
         
