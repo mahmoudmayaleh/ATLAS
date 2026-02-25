@@ -778,9 +778,15 @@ class ATLASIntegratedTrainer:
         # NO OPTIMIZER - we only need gradients, not weight updates
         
         model.train()
-        grad_history = []
-        layer_norms = {}  # Track per-layer gradient norms for importance
-        
+        # Online running average: accumulate sum + count to avoid stacking all batches at end
+        running_sum: Dict[str, torch.Tensor] = {}
+        running_count: Dict[str, int] = {}
+        layer_norms: Dict[str, List[float]] = {}
+        # Keep a small sample of per-batch dicts for PCA (capped to avoid RAM spikes)
+        grad_history: List[Dict[str, torch.Tensor]] = []
+        MAX_HISTORY = 3  # per client — enough for PCA diversity without RAM explosion
+        import re as _re
+
         # Train for fingerprint_epochs to collect gradients
         batch_limit = self.config.fingerprint_batches  # Total batches across all epochs
         total_batches_processed = 0
@@ -807,7 +813,7 @@ class ATLASIntegratedTrainer:
                 
                 # Check for NaN before backward
                 if torch.isnan(loss) or torch.isinf(loss):
-                    print(f"⚠️ NaN loss in fingerprint, skipping batch", end="")
+                    print(f"⚠️", end="", flush=True)
                     del input_ids, attention_mask, labels, outputs, loss
                     if torch.cuda.is_available():
                         torch.cuda.empty_cache()
@@ -815,48 +821,46 @@ class ATLASIntegratedTrainer:
                 
                 loss.backward()
                 
-                # Collect gradients from EXACTLY last 2 transformer blocks (DistilBERT has 6 layers, BERT has 12)
-                # DistilBERT: transformer.layer.4, transformer.layer.5, classifier
-                # BERT: encoder.layer.10, encoder.layer.11, classifier
+                # Collect gradients from last 2 transformer blocks only
+                # DistilBERT: transformer.layer.4/5 | BERT: encoder.layer.10/11 | + classifier
                 grads_dict = {}
                 for name, param in model.named_parameters():
                     if param.grad is not None:
-                        # Check for last 2 layers based on model architecture
                         is_last_two = any([
-                            'transformer.layer.4' in name or 'transformer.layer.5' in name,  # DistilBERT
-                            'encoder.layer.10' in name or 'encoder.layer.11' in name,        # BERT
-                            'classifier' in name or 'pooler' in name                         # Final layers
+                            'transformer.layer.4' in name or 'transformer.layer.5' in name,
+                            'encoder.layer.10' in name or 'encoder.layer.11' in name,
+                            'classifier' in name or 'pooler' in name,
                         ])
                         if is_last_two:
-                            # Move to CPU immediately to avoid GPU OOM
-                            grad_tensor = param.grad.detach().cpu().clone()
-                            grads_dict[name] = grad_tensor
-                            
-                            # Compute layer-level importance (squared gradient norm)
-                            # Infer layer index from parameter name
-                            import re
-                            layer_match = re.search(r'layer[._](\d+)', name)
+                            grad_cpu = param.grad.detach().cpu()
+
+                            # Online average: update running sum (no list accumulation)
+                            if name not in running_sum:
+                                running_sum[name] = grad_cpu.clone()
+                                running_count[name] = 1
+                            else:
+                                running_sum[name].add_(grad_cpu)
+                                running_count[name] += 1
+
+                            # Layer importance (squared norm)
+                            layer_match = _re.search(r'layer[._](\d+)', name)
                             if layer_match:
-                                layer_idx = int(layer_match.group(1))
-                                layer_key = f'layer_{layer_idx}'
+                                layer_key = f'layer_{int(layer_match.group(1))}'
                             elif 'classifier' in name or 'pooler' in name:
                                 layer_key = 'classifier'
                             else:
                                 layer_key = 'other'
-                            
-                            grad_norm_sq = (grad_tensor ** 2).sum().item()
-                            if layer_key not in layer_norms:
-                                layer_norms[layer_key] = []
-                            layer_norms[layer_key].append(grad_norm_sq)
-                
-                if grads_dict:
-                    # Pass as dict for layer-wise normalization in GradientExtractor
-                    grad_history.append(grads_dict)
-                
+                            grad_norm_sq = float((grad_cpu ** 2).sum())
+                            layer_norms.setdefault(layer_key, []).append(grad_norm_sq)
+
+                            grads_dict[name] = grad_cpu
+
+                # Keep a small batch sample for PCA diversity
+                if grads_dict and len(grad_history) < MAX_HISTORY:
+                    grad_history.append({k: v.clone() for k, v in grads_dict.items()})
+
                 # Clear gradients immediately
                 model.zero_grad(set_to_none=True)
-                
-                # Clear memory after EVERY batch to prevent OOM on T4
                 del input_ids, attention_mask, labels, outputs, loss, grads_dict
                 if torch.cuda.is_available():
                     torch.cuda.empty_cache()
@@ -867,28 +871,16 @@ class ATLASIntegratedTrainer:
             if total_batches_processed >= batch_limit:
                 break
         
-        # Extract fingerprint using GradientExtractor
-        if grad_history:
-            # Average gradient dicts across batches
-            averaged_grads = {}
-            for grad_dict in grad_history:
-                for name, grad in grad_dict.items():
-                    if name not in averaged_grads:
-                        averaged_grads[name] = []
-                    averaged_grads[name].append(grad)
-            
-            for name in averaged_grads:
-                averaged_grads[name] = torch.mean(torch.stack(averaged_grads[name]), dim=0)
-            
-            # Compute average importance per layer
-            layer_importance = {}
-            for layer_key, norms in layer_norms.items():
-                layer_importance[layer_key] = float(np.mean(norms))
-            
-            # Return gradient dict, importance scores, and per-batch gradients
+        # Build averaged gradients from running sums (O(params), not O(batches × params))
+        if running_sum:
+            averaged_grads = {
+                name: running_sum[name] / running_count[name]
+                for name in running_sum
+            }
+            layer_importance = {k: float(np.mean(v)) for k, v in layer_norms.items()}
             return averaged_grads, layer_importance, grad_history
         else:
-            # Fallback: random raw gradient dict
+            # Fallback: random fingerprint
             return {'fallback': torch.from_numpy(np.random.randn(self.config.fingerprint_dim)).float()}, {}, []
     
     def _phase2_rank_allocation(
