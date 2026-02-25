@@ -621,14 +621,6 @@ class ATLASIntegratedTrainer:
             if model.config.pad_token_id is None:
                 model.config.pad_token_id = model.config.eos_token_id
             
-            # Enable gradient checkpointing for large models (trade compute for memory)
-            if hasattr(model, 'gradient_checkpointing_enable') and callable(getattr(model, 'gradient_checkpointing_enable', None)):
-                try:
-                    model.gradient_checkpointing_enable()
-                    print("[Gradient checkpointing enabled]", end=" ")
-                except Exception as e:
-                    print(f"[Warning: gradient checkpointing failed: {e}]", end=" ")
-            
             # Reinitialize classification head with small weights for stability
             if hasattr(model, 'classifier'):
                 torch.nn.init.normal_(model.classifier.weight, mean=0.0, std=0.02)
@@ -752,13 +744,15 @@ class ATLASIntegratedTrainer:
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
         
-        # Enable gradient checkpointing to reduce memory
-        gradient_checkpointing_enable = getattr(model, 'gradient_checkpointing_enable', None)
-        if callable(gradient_checkpointing_enable):
+        # Disable gradient checkpointing during fingerprinting:
+        # with batch_size=1 it re-runs the full forward pass per backward call,
+        # doubling computation time for long sequences (e.g. QNLI with 256 tokens).
+        gradient_checkpointing_disable = getattr(model, 'gradient_checkpointing_disable', None)
+        if callable(gradient_checkpointing_disable):
             try:
-                gradient_checkpointing_enable()
-            except Exception as e:
-                print(f"[Warning: gradient checkpointing failed: {e}]", end=" ")
+                gradient_checkpointing_disable()
+            except Exception:
+                pass
         
         # Limit dataset to fingerprint_samples for memory efficiency
         fingerprint_size = min(len(dataset), self.config.fingerprint_samples)
@@ -819,10 +813,18 @@ class ATLASIntegratedTrainer:
                         torch.cuda.empty_cache()
                     continue
                 
-                loss.backward()
-                
+                try:
+                    loss.backward()
+                except Exception as oom:
+                    print(f"⚠️OOM/ERR", end="", flush=True)
+                    model.zero_grad(set_to_none=True)
+                    del input_ids, attention_mask, labels, outputs, loss
+                    if torch.cuda.is_available():
+                        torch.cuda.empty_cache()
+                    total_batches_processed += 1
+                    continue
+
                 # Collect gradients from last 2 transformer blocks only
-                # DistilBERT: transformer.layer.4/5 | BERT: encoder.layer.10/11 | + classifier
                 grads_dict = {}
                 for name, param in model.named_parameters():
                     if param.grad is not None:

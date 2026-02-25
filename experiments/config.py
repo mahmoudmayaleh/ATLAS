@@ -67,7 +67,7 @@ MODELS = {
         "learning_rate": 3e-5,
         "local_epochs": 3,
         "fingerprint_samples": 100,
-        "fingerprint_batches": 30,
+        "fingerprint_batches": 15,
         "max_samples": 3000,
         "lora_ranks": [4, 8, 16, 32]
     },
@@ -83,7 +83,7 @@ MODELS = {
         "learning_rate": 3e-5,
         "local_epochs": 3,
         "fingerprint_samples": 100,
-        "fingerprint_batches": 30,
+        "fingerprint_batches": 15,
         "max_samples": 3000,
         "lora_ranks": [4, 8, 16, 32]
     },
