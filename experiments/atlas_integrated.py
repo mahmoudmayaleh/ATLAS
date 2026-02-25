@@ -1693,68 +1693,56 @@ class ATLASIntegratedTrainer:
                 except Exception:
                     rank = 8
         
-        # Debug: print model type and structure
-        print(f"[LoRA Debug] Model type: {type(model).__name__}")
-        print(f"[LoRA Debug] Model config type: {type(model.config).__name__}")
-        
         # Auto-detect target modules based on model architecture
-        # Use FULL module paths, not just last component
         all_module_names = []
-        all_module_types = []
-        
         for name, module in model.named_modules():
-            all_module_types.append((name, type(module).__name__))
-            # GPT2 uses Conv1D instead of Linear!
+            # GPT2 uses Conv1D instead of Linear
             if isinstance(module, nn.Linear) or type(module).__name__ == 'Conv1D':
                 all_module_names.append(name)
-                
-        print(f"[LoRA Debug] Total modules: {len(all_module_types)}")
-        print(f"[LoRA Debug] First 10 modules: {all_module_types[:10]}")
-        print(f"[LoRA Debug] Linear/Conv1D modules found: {len(all_module_names)}")
-        print(f"[LoRA Debug] Sample linear modules: {all_module_names[:5]}")
-        
-        # Architecture-specific patterns (use regex-style patterns)
-        target_modules = []
-        
-        # Check for GPT2 architecture
+
+        # Architecture-specific patterns
+        target_modules: Any = []
+
         if any('c_attn' in name for name in all_module_names):
+            # GPT-2
             target_modules = ['c_attn', 'c_proj']
-        # Check for LLaMA architecture
         elif any('q_proj' in name for name in all_module_names):
+            # LLaMA / Qwen
             target_modules = ['q_proj', 'k_proj', 'v_proj', 'o_proj']
-        # Check for BERT/DistilBERT architecture
+        elif any('q_lin' in name for name in all_module_names):
+            # DistilBERT
+            target_modules = ['q_lin', 'k_lin', 'v_lin', 'out_lin']
         elif any('query' in name for name in all_module_names):
+            # BERT
             target_modules = ['query', 'key', 'value']
         else:
             # Generic fallback: find common attention patterns
-            patterns = ['attn', 'attention', 'self']
-            for pattern in patterns:
-                matched = [n.split('.')[-1] for n in all_module_names if pattern in n and 'score' not in n and 'classifier' not in n]
+            for pattern in ['attn', 'attention', 'self']:
+                matched = [n.split('.')[-1] for n in all_module_names
+                           if pattern in n and 'score' not in n and 'classifier' not in n]
                 if matched:
                     target_modules = list(set(matched))[:4]
                     break
-        
-        # Last resort: just use first few non-classifier modules
+
+        # Last resort
         if not target_modules:
-            target_modules = [n.split('.')[-1] for n in all_module_names if 'score' not in n and 'classifier' not in n][:3]
-        
-        # If STILL no targets, there's a serious problem - use 'all-linear' as emergency fallback
+            target_modules = [n.split('.')[-1] for n in all_module_names
+                              if 'score' not in n and 'classifier' not in n][:3]
+
+        # Emergency fallback
         if not target_modules:
-            print("[LoRA Debug] WARNING: No suitable target modules found! Using emergency fallback.")
-            target_modules = 'all-linear'  # PEFT special keyword
-        
-        print(f"[LoRA Debug] Target modules selected: {target_modules}")
-        
-        # Find classifier modules - these should NOT overlap with target_modules
+            print("[LoRA] WARNING: No suitable target modules found — using 'all-linear' fallback.")
+            target_modules = 'all-linear'
+
+        # Find classifier modules (must NOT overlap with target_modules)
         classifier_modules = []
         for name in all_module_names:
             module_name = name.split('.')[-1]
             if any(cls in module_name for cls in ['classifier', 'score', 'pre_classifier']):
-                if module_name not in target_modules:  # Avoid overlap
+                if module_name not in target_modules:
                     classifier_modules.append(module_name)
-        
+
         modules_to_save = sorted(set(classifier_modules)) if classifier_modules else None
-        print(f"[LoRA Debug] Modules to save (classifier): {modules_to_save}")
         
         lora_config = LoraConfig(
             task_type=TaskType.SEQ_CLS,
