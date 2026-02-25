@@ -16,7 +16,6 @@ import pandas as pd
 # Color scheme for different methods - fixed to ensure unique colors
 COLORS = {
     'ATLAS': '#1f77b4',
-    'ATLAS (No Lap)': '#ff7f0e',
     'FedAvg (Clustered)': '#2ca02c',
     'Standard FL': '#9467bd',
     'distilbert': '#1f77b4',
@@ -26,14 +25,12 @@ COLORS = {
 
 LINE_STYLES = {
     'ATLAS': '-',
-    'ATLAS (No Lap)': '--',
     'FedAvg (Clustered)': '-.',
     'Standard FL': ':'
 }
 
 MARKERS = {
     'ATLAS': 'o',
-    'ATLAS (No Lap)': 's',
     'FedAvg (Clustered)': 'D',
     'Standard FL': 'v'
 }
@@ -77,7 +74,7 @@ class PublicationPlotter:
             return label
         low = label.lower()
         if 'no lap' in low or 'no lapl' in low:
-            return 'ATLAS (No Lap)'
+            return 'ATLAS'
         if 'atlas' in low and 'no lap' not in low and 'full' in low:
             return 'ATLAS'
         if low.strip() == 'atlas':
@@ -176,7 +173,6 @@ class PublicationPlotter:
         
         configs = {
             'ATLAS': 'atlas_distilbert-base-uncased_atlas_seed42_r10.json',
-            'ATLAS (No Lap)': 'atlas_distilbert-base-uncased_atlas_no_laplacian_seed42_r10.json',
             'FedAvg (Clustered)': 'atlas_distilbert-base-uncased_fedavg_cluster_seed42_r10.json',
             'Standard FL': 'atlas_distilbert-base-uncased_standard_fl_seed42_r10.json',
         }
@@ -242,7 +238,9 @@ class PublicationPlotter:
         print("Generating Figure 2: Model Comparison...")
         
         models_data = {
-            'DistilBERT': ['atlas_distilbert-base-uncased_atlas_seed42_r10.json'],
+            'DistilBERT': ['atlas_distilbert-base-uncased_atlas_seed42_r10.json',
+                            'atlas_distilbert-base-uncased_atlas_seed123_r10.json',
+                            'atlas_distilbert-base-uncased_atlas_seed456_r10.json'],
             'GPT-2': [
                 'atlas_gpt2_atlas_seed42_r10.json',
                 'atlas_gpt2_atlas_seed123_r10.json',
@@ -251,6 +249,7 @@ class PublicationPlotter:
             'Qwen-0.5B': [
                 'atlas_Qwen_Qwen2.5-0.5B_atlas_seed42_r10.json',
                 'atlas_Qwen_Qwen2.5-0.5B_atlas_seed123_r10.json',
+                'atlas_Qwen_Qwen2.5-0.5B_atlas_seed456_r10.json',
             ],
         }
         
@@ -293,7 +292,7 @@ class PublicationPlotter:
                                     (mean_accs - std_accs) * 100,
                                     (mean_accs + std_accs) * 100,
                                     color=self._color(key),
-                                    alpha=0.15)
+                                    alpha=0.25)
         
         ax.set_xlabel('Communication Round', fontweight='bold')
         ax.set_ylabel('Average Accuracy (%)', fontweight='bold')
@@ -307,38 +306,81 @@ class PublicationPlotter:
         print(f"  Saved to {figfile}")
         plt.close(fig)
         
-        # Baseline comparison
+        # Baseline comparison (plot mean +/- std across available seeds)
         fig, ax = plt.subplots(figsize=(6.5, 3.0), constrained_layout=True)
         baseline_comparisons = {
             'DistilBERT': {
-                'ATLAS': 'atlas_distilbert-base-uncased_atlas_seed42_r10.json',
-                'Standard FL': 'atlas_distilbert-base-uncased_standard_fl_seed42_r10.json',
+                'ATLAS': [
+                    'atlas_distilbert-base-uncased_atlas_seed42_r10.json',
+                    'atlas_distilbert-base-uncased_atlas_seed123_r10.json',
+                    'atlas_distilbert-base-uncased_atlas_seed456_r10.json',
+                ],
+                'Standard FL': [
+                    'atlas_distilbert-base-uncased_standard_fl_seed42_r10.json',
+                    'atlas_distilbert-base-uncased_standard_fl_seed123_r10.json',
+                    'atlas_distilbert-base-uncased_standard_fl_seed456_r10.json',
+                ],
             },
             'GPT-2': {
-                'ATLAS': 'atlas_gpt2_atlas_seed42_r10.json',
-                'Standard FL': 'atlas_gpt2_standard_fl_seed42_r10.json',
+                'ATLAS': [
+                    'atlas_gpt2_atlas_seed42_r10.json',
+                    'atlas_gpt2_atlas_seed123_r10.json',
+                    'atlas_gpt2_atlas_seed456_r10.json',
+                ],
+                'Standard FL': [
+                    'atlas_gpt2_standard_fl_seed42_r10.json',
+                    'atlas_gpt2_standard_fl_seed123_r10.json',
+                    'atlas_gpt2_standard_fl_seed456_r10.json',
+                ],
             },
             'Qwen-0.5B': {
-                'ATLAS': 'atlas_Qwen_Qwen2.5-0.5B_atlas_seed42_r10.json',
-                'Standard FL': 'atlas_Qwen_Qwen2.5-0.5B_standard_fl_seed42_r10.json',
+                'ATLAS': [
+                    'atlas_Qwen_Qwen2.5-0.5B_atlas_seed42_r10.json',
+                    'atlas_Qwen_Qwen2.5-0.5B_atlas_seed123_r10.json',
+                    'atlas_Qwen_Qwen2.5-0.5B_atlas_seed456_r10.json',
+                ],
+                'Standard FL': [
+                    'atlas_Qwen_Qwen2.5-0.5B_standard_fl_seed42_r10.json',
+                    'atlas_Qwen_Qwen2.5-0.5B_standard_fl_seed123_r10.json',
+                    'atlas_Qwen_Qwen2.5-0.5B_standard_fl_seed456_r10.json',
+                ],
             },
         }
-        
-        for model_name, configs in baseline_comparisons.items():
-            for method, filename in configs.items():
-                result = self.load_result(filename)
-                rounds, accs, f1s, times = self.extract_metrics_per_round(result)
 
-                if rounds is not None:
-                    linestyle = '-' if method == 'ATLAS' else '--'
-                    # Plot using method-specific color (normalize method label)
-                    label = f"{model_name} ({method})"
-                    ax.plot(rounds, accs * 100,
-                            label=label,
-                            color=self._color(method),
-                            linestyle=linestyle,
-                            linewidth=1.5,
-                            alpha=0.8)
+        for model_name, configs in baseline_comparisons.items():
+            for method, filenames in configs.items():
+                all_accs = []
+                rounds_arr = None
+                for filename in filenames:
+                    result = self.load_result(filename)
+                    rounds, accs, f1s, times = self.extract_metrics_per_round(result)
+                    if rounds is not None:
+                        all_accs.append(accs)
+                        rounds_arr = rounds
+
+                if not all_accs:
+                    continue
+
+                mean_accs = np.mean(all_accs, axis=0)
+                std_accs = np.std(all_accs, axis=0) if len(all_accs) > 1 else np.zeros_like(mean_accs)
+
+                linestyle = '-' if method == 'ATLAS' else '--'
+                label = f"{model_name} ({method})"
+                # Use model-specific color so each model's traces are visually
+                # distinct; use linestyle to indicate the method (ATLAS vs Standard FL)
+                ax.plot(rounds_arr, mean_accs * 100,
+                    label=label,
+                    color=self._color(model_name),
+                    linestyle=linestyle,
+                    linewidth=1.5,
+                    alpha=0.9)
+
+                if len(all_accs) > 1:
+                    ax.fill_between(rounds_arr,
+                                    (mean_accs - std_accs) * 100,
+                                    (mean_accs + std_accs) * 100,
+                                    color=self._color(model_name),
+                                    alpha=0.25)
         
         ax.set_xlabel('Communication Round', fontweight='bold')
         ax.set_ylabel('Average Accuracy (%)', fontweight='bold')
@@ -351,580 +393,669 @@ class PublicationPlotter:
         fig.savefig(figfile, dpi=300)
         print(f"  Saved to {figfile}")
         plt.close(fig)
-    
-    def plot_communication_efficiency(self):
-        """Generate Figure 3: Communication Efficiency Analysis."""
-        print("Generating Figure 3: Communication Efficiency...")
-        
-        configs = {
-            'ATLAS': 'atlas_distilbert-base-uncased_atlas_seed42_r10.json',
-            'ATLAS (No Lap)': 'atlas_distilbert-base-uncased_atlas_no_laplacian_seed42_r10.json',
-            'FedAvg (Clustered)': 'atlas_distilbert-base-uncased_fedavg_cluster_seed42_r10.json',
-            'Standard FL': 'atlas_distilbert-base-uncased_standard_fl_seed42_r10.json',
-        }
-        
-        # Cumulative communication
-        fig, ax = plt.subplots(figsize=(6.5, 3.0), constrained_layout=True)
-        for label, filename in configs.items():
-            result = self.load_result(filename)
-            if result is None:
-                continue
-            
-            rounds = []
-            cumulative_comm = []
-            total_comm = 0
-            
-            for round_data in result['round_metrics']:
-                rounds.append(round_data.get('round', len(rounds) + 1))
-                upload = sum(round_data.get('comm_upload_bytes', {}).values())
-                download = sum(round_data.get('comm_download_bytes', {}).values())
-                total_comm += (upload + download)
-                cumulative_comm.append(total_comm / (1024 * 1024))
-            ax.plot(rounds, cumulative_comm,
-                    label=label,
-                    color=self._color(label),
-                    linestyle=self._linestyle(label),
-                    marker=self._marker(label),
-                    markevery=2,
-                    linewidth=1.5,
-                    markersize=4)
-        
-        ax.set_xlabel('Communication Round', fontweight='bold')
-        ax.set_ylabel('Cumulative Data (MB)', fontweight='bold')
-        ax.set_title('Communication Overhead', fontweight='bold')
-        ax.grid(True, alpha=0.3, linestyle='--', linewidth=0.5)
-        ax.legend(loc='upper left', framealpha=0.9, fontsize=8)
-        ax.set_xlim(left=1)
-        
-        figfile = self.output_dir / 'fig3_cumulative_communication.png'
-        fig.savefig(figfile, dpi=300)
-        print(f"  Saved to {figfile}")
-        plt.close(fig)
-        
-        # Communication efficiency
-        fig, ax = plt.subplots(figsize=(5.5, 3.0), constrained_layout=True)
-        methods = []
-        efficiencies = []
-        colors_list = []
-        
-        for label, filename in configs.items():
-            result = self.load_result(filename)
-            if result is None:
-                continue
-            
-            comm_stats = self.extract_communication_stats(result)
-            final_acc = result['round_metrics'][-1].get('avg_accuracy', 0.0)
-            efficiency = (final_acc * 100) / comm_stats['total_comm_mb'] if comm_stats['total_comm_mb'] > 0 else 0
-            
-            methods.append(label.replace(' (No Lap)', '\n(No Lap)').replace(' (Clustered)', '\n(Clustered)'))
-            efficiencies.append(efficiency)
-            colors_list.append(self._color(label))
-        
-        bars = ax.bar(range(len(methods)), efficiencies, color=colors_list, alpha=0.8, edgecolor='black', linewidth=1)
-        ax.set_xticks(range(len(methods)))
-        ax.set_xticklabels(methods, rotation=0, ha='center', fontsize=8)
-        ax.set_ylabel('Accuracy / MB (%·MB⁻¹)', fontweight='bold')
-        ax.set_title('Communication Efficiency', fontweight='bold')
-        ax.grid(True, alpha=0.3, linestyle='--', linewidth=0.5, axis='y')
-        
-        for bar, eff in zip(bars, efficiencies):
-            height = bar.get_height()
-            ax.text(bar.get_x() + bar.get_width()/2., height, f'{eff:.2f}',
-                    ha='center', va='bottom', fontsize=7)
-        
-        figfile = self.output_dir / 'fig3_communication_efficiency.png'
-        fig.savefig(figfile, dpi=300)
-        print(f"  Saved to {figfile}")
-        plt.close(fig)
-        
-        # Total communication
-        fig, ax = plt.subplots(figsize=(5.5, 3.0), constrained_layout=True)
-        methods_comm = []
-        total_comms = []
-        colors_list_comm = []
-        
-        for label, filename in configs.items():
-            result = self.load_result(filename)
-            if result is None:
-                continue
-            
-            comm_stats = self.extract_communication_stats(result)
-            methods_comm.append(label.replace(' (No Lap)', '\n(No Lap)').replace(' (Clustered)', '\n(Clustered)'))
-            total_comms.append(comm_stats['total_comm_mb'])
-            colors_list_comm.append(self._color(label))
-        
-        bars = ax.bar(range(len(methods_comm)), total_comms, color=colors_list_comm, alpha=0.8, edgecolor='black', linewidth=1)
-        ax.set_xticks(range(len(methods_comm)))
-        ax.set_xticklabels(methods_comm, rotation=0, ha='center', fontsize=8)
-        ax.set_ylabel('Total Communication (MB)', fontweight='bold')
-        ax.set_title('Total Data Transferred', fontweight='bold')
-        ax.grid(True, alpha=0.3, linestyle='--', linewidth=0.5, axis='y')
-        
-        for bar, comm in zip(bars, total_comms):
-            height = bar.get_height()
-            ax.text(bar.get_x() + bar.get_width()/2., height, f'{comm:.0f}',
-                    ha='center', va='bottom', fontsize=7)
-        
-        figfile = self.output_dir / 'fig3_total_communication.png'
-        fig.savefig(figfile, dpi=300)
-        print(f"  Saved to {figfile}")
-        plt.close(fig)
-    
-    def plot_clustering_analysis(self):
-        """Generate Figure 4: Clustering and Heterogeneity Analysis."""
-        print("Generating Figure 4: Clustering Analysis...")
-        
-        result = self.load_result('atlas_distilbert-base-uncased_atlas_seed42_r10.json')
-        if result is None:
-            print("  Warning: Could not load result for clustering analysis")
-            return
-        
-        # Per-client accuracy evolution
-        num_clients = len(result['round_metrics'][0].get('test_accuracies', {}))
-        fig, ax = plt.subplots(figsize=(7.0, 3.5), constrained_layout=True)
-        client_colors = plt.cm.tab20(np.linspace(0, 1, max(2, num_clients)))
-        
-        for client_id in range(num_clients):
-            rounds = []
-            accs = []
-            for round_data in result['round_metrics']:
-                rounds.append(round_data.get('round', len(rounds) + 1))
-                acc = round_data.get('test_accuracies', {}).get(str(client_id), 0)
-                accs.append(acc * 100)
-            
-            ax.plot(rounds, accs, color=client_colors[client_id % len(client_colors)], 
-                    alpha=0.6, linewidth=1.0)
-        
-        ax.set_xlabel('Communication Round', fontweight='bold')
-        ax.set_ylabel('Test Accuracy (%)', fontweight='bold')
-        ax.set_title('Per-Client Accuracy Evolution', fontweight='bold')
-        ax.grid(True, alpha=0.3, linestyle='--', linewidth=0.5)
-        ax.set_xlim(left=1)
-        
-        figfile = self.output_dir / 'fig4_per_client_accuracy.png'
-        fig.savefig(figfile, dpi=300)
-        print(f"  Saved to {figfile}")
-        plt.close(fig)
-        
-        # Final accuracy distribution
-        configs = {
-            'ATLAS': 'atlas_distilbert-base-uncased_atlas_seed42_r10.json',
-            'Standard FL': 'atlas_distilbert-base-uncased_standard_fl_seed42_r10.json',
-        }
-        
-        final_accs = {}
-        for label, filename in configs.items():
-            res = self.load_result(filename)
-            if res is None:
-                continue
-            final_round = res['round_metrics'][-1]
-            client_accs = [v * 100 for v in final_round.get('test_accuracies', {}).values()]
-            final_accs[label] = client_accs
-        
-        fig, ax = plt.subplots(figsize=(5.0, 3.5), constrained_layout=True)
-        data = [final_accs.get('ATLAS', []), final_accs.get('Standard FL', [])]
-        
-        bp = ax.boxplot(data, widths=0.6, patch_artist=True, labels=['ATLAS', 'Standard FL'],
-                        showmeans=True, meanprops=dict(marker='D', markerfacecolor='red', markersize=6))
-        
-        colors_box = [COLORS['ATLAS'], COLORS['Standard FL']]
-        for patch, color in zip(bp['boxes'], colors_box):
-            patch.set_facecolor(color)
-            patch.set_alpha(0.6)
-        
-        ax.set_ylabel('Final Test Accuracy (%)', fontweight='bold')
-        ax.set_title('Client Accuracy Distribution', fontweight='bold')
-        ax.grid(True, alpha=0.3, linestyle='--', linewidth=0.5, axis='y')
-        
-        if all(len(lst) for lst in data):
-            atlas_mean = np.mean(data[0])
-            fl_mean = np.mean(data[1])
-            atlas_std = np.std(data[0])
-            fl_std = np.std(data[1])
-            y_max = max(max(data[0]) if data[0] else 0, max(data[1]) if data[1] else 0)
-            
-            ax.text(1, y_max + 2, f'μ={atlas_mean:.1f}%\nσ={atlas_std:.1f}',
-                    ha='center', fontsize=7, bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.3))
-            ax.text(2, y_max + 2, f'μ={fl_mean:.1f}%\nσ={fl_std:.1f}',
-                    ha='center', fontsize=7, bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.3))
-        
-        figfile = self.output_dir / 'fig4_client_distribution.png'
-        fig.savefig(figfile, dpi=300)
-        print(f"  Saved to {figfile}")
-        plt.close(fig)
-    
-    
-    def plot_convergence_speed(self):
-        """Generate Figure 6: Training Convergence Speed."""
-        print("Generating Figure 6: Convergence Speed Analysis...")
-        
-        configs = {
-            'ATLAS': 'atlas_distilbert-base-uncased_atlas_seed42_r10.json',
-            'ATLAS (No Lap)': 'atlas_distilbert-base-uncased_atlas_no_laplacian_seed42_r10.json',
-            'FedAvg (Clustered)': 'atlas_distilbert-base-uncased_fedavg_cluster_seed42_r10.json',
-            'Standard FL': 'atlas_distilbert-base-uncased_standard_fl_seed42_r10.json',
-        }
-        
-        # Accuracy vs cumulative training time
-        fig, ax = plt.subplots(figsize=(6.5, 3.0), constrained_layout=True)
-        
-        for label, filename in configs.items():
-            result = self.load_result(filename)
-            if result is None:
-                continue
-            
-            rounds = []
-            cumulative_time = []
-            accuracies = []
-            total_time = 0
-            
-            for round_data in result['round_metrics']:
-                rounds.append(round_data.get('round', len(rounds) + 1))
-                total_time += round_data.get('time_seconds', 0.0)
-                cumulative_time.append(total_time / 60)
-                accuracies.append(round_data.get('avg_accuracy', 0.0) * 100)
-            ax.plot(cumulative_time, accuracies, label=label,
-                    color=self._color(label),
-                    linestyle=self._linestyle(label),
-                    marker=self._marker(label),
-                    markevery=2, linewidth=1.5, markersize=4)
-        
-        ax.set_xlabel('Cumulative Time (minutes)', fontweight='bold')
-        ax.set_ylabel('Average Accuracy (%)', fontweight='bold')
-        ax.set_title('Accuracy vs. Training Time', fontweight='bold')
-        ax.grid(True, alpha=0.3, linestyle='--', linewidth=0.5)
-        ax.legend(loc='lower right', framealpha=0.9, fontsize=8)
-        
-        figfile = self.output_dir / 'fig6_accuracy_vs_time.png'
-        fig.savefig(figfile, dpi=300)
-        print(f"  Saved to {figfile}")
-        plt.close(fig)
-        
-        # Average time per round
-        methods = []
-        avg_times = []
-        colors_list = []
-        
-        for label, filename in configs.items():
-            result = self.load_result(filename)
-            if result is None:
-                continue
-            
-            times = [rd.get('time_seconds', 0.0) for rd in result['round_metrics']]
-            avg_time = np.mean(times) / 60 if len(times) else 0.0
-            
-            methods.append(label.replace(' (No Lap)', '\n(No Lap)').replace(' (Clustered)', '\n(Clustered)'))
-            avg_times.append(avg_time)
-            colors_list.append(self._color(label))
-        
-        fig, ax = plt.subplots(figsize=(5.5, 3.0), constrained_layout=True)
-        bars = ax.bar(range(len(methods)), avg_times, color=colors_list,
-                      alpha=0.8, edgecolor='black', linewidth=1)
-        ax.set_xticks(range(len(methods)))
-        ax.set_xticklabels(methods, rotation=0, ha='center', fontsize=8)
-        ax.set_ylabel('Avg. Time per Round (min)', fontweight='bold')
-        ax.set_title('Training Time per Round', fontweight='bold')
-        ax.grid(True, alpha=0.3, linestyle='--', linewidth=0.5, axis='y')
-        
-        for bar, time_val in zip(bars, avg_times):
-            height = bar.get_height()
-            ax.text(bar.get_x() + bar.get_width()/2., height, f'{time_val:.1f}',
-                    ha='center', va='bottom', fontsize=7)
-        
-        figfile = self.output_dir / 'fig6_time_per_round.png'
-        fig.savefig(figfile, dpi=300)
-        print(f"  Saved to {figfile}")
-        plt.close(fig)
-    
-    def plot_clustering_visualization(self):
-        """Generate Figure 7: Clustering Visualization."""
-        print("Generating Figure 7: Clustering Visualization...")
-        
-        result = self.load_result('atlas_distilbert-base-uncased_atlas_seed42_r10.json')
-        if result is None:
-            print("  Warning: Could not load result for clustering visualization")
-            return
-        
-        if 'cluster_labels' not in result or 'phase1_clustering' not in result:
-            print("  Warning: No clustering data found in result")
-            return
-        
-        cluster_labels = result['cluster_labels']
-        clustering_info = result['phase1_clustering']
-        num_clusters = clustering_info.get('num_clusters', 4)
-        
-        # Create cluster mapping
-        clients = sorted([int(k) for k in cluster_labels.keys()])
-        clusters = [cluster_labels[str(c)] for c in clients]
-        
-        # Cluster visualization as bar chart
-        fig, ax = plt.subplots(figsize=(7.0, 3.5), constrained_layout=True)
-        
-        # Color map for clusters
-        cluster_colors = plt.cm.Set3(np.linspace(0, 1, num_clusters))
-        colors = [cluster_colors[clusters[i]] for i in range(len(clients))]
-        
-        bars = ax.bar(clients, [1] * len(clients), color=colors, edgecolor='black', linewidth=1.5)
-        
-        ax.set_xlabel('Client ID', fontweight='bold')
-        ax.set_ylabel('Cluster Assignment', fontweight='bold')
-        ax.set_title('Client Cluster Assignments', fontweight='bold')
-        ax.set_xticks(clients)
-        ax.set_yticks([])
-        ax.set_ylim(0, 1.2)
-        
-        # Add legend
-        from matplotlib.patches import Patch
-        legend_elements = [Patch(facecolor=cluster_colors[i], edgecolor='black',
-                                 label=f'Cluster {i}') for i in range(num_clusters)]
-        ax.legend(handles=legend_elements, loc='upper right', framealpha=0.9, fontsize=8)
-        
-        # Add cluster labels on bars
-        for i, (client, cluster) in enumerate(zip(clients, clusters)):
-            ax.text(client, 0.5, f'C{cluster}', ha='center', va='center',
-                   fontweight='bold', fontsize=9)
-        
-        figfile = self.output_dir / 'fig7_clustering_visualization.png'
-        fig.savefig(figfile, dpi=300)
-        print(f"  Saved to {figfile}")
-        plt.close(fig)
-        
-        # Also create a cluster size distribution
-        fig, ax = plt.subplots(figsize=(5.5, 3.0), constrained_layout=True)
-        
-        cluster_counts = {}
-        for c in clusters:
-            cluster_counts[c] = cluster_counts.get(c, 0) + 1
-        
-        cluster_ids = sorted(cluster_counts.keys())
-        counts = [cluster_counts[cid] for cid in cluster_ids]
-        colors_bar = [cluster_colors[cid] for cid in cluster_ids]
-        
-        bars = ax.bar(cluster_ids, counts, color=colors_bar, edgecolor='black',
-                      linewidth=1.5, alpha=0.8)
-        ax.set_xlabel('Cluster ID', fontweight='bold')
-        ax.set_ylabel('Number of Clients', fontweight='bold')
-        ax.set_title('Cluster Size Distribution', fontweight='bold')
-        ax.set_xticks(cluster_ids)
-        ax.grid(True, alpha=0.3, linestyle='--', linewidth=0.5, axis='y')
-        
-        # Add count labels on bars
-        for bar, count in zip(bars, counts):
-            height = bar.get_height()
-            ax.text(bar.get_x() + bar.get_width()/2., height,
-                   f'{int(count)}', ha='center', va='bottom', fontsize=9, fontweight='bold')
-        
-        figfile = self.output_dir / 'fig7_cluster_distribution.png'
-        fig.savefig(figfile, dpi=300)
-        print(f"  Saved to {figfile}")
-        plt.close(fig)
 
-    def plot_clustering_map(self):
-        """Generate a 2D embedding map of clients colored by cluster assignment.
+    def _extract_accuracy_vs_cumulative_comm(self, result):
+        """Return (rounds, cumulative_comm_mb, avg_accuracy_pct)."""
+        if result is None or 'round_metrics' not in result:
+            return None, None, None
 
-        Embedding is computed from per-client accuracy time series using PCA
-        (or t-SNE if available). This provides a spatial view of cluster groups.
+        rounds = []
+        cumulative_comm_mb = []
+        acc_pct = []
+        total_bytes = 0
+
+        for i, round_data in enumerate(result['round_metrics']):
+            rounds.append(round_data.get('round', i + 1))
+            upload = sum(round_data.get('comm_upload_bytes', {}).values())
+            download = sum(round_data.get('comm_download_bytes', {}).values())
+            total_bytes += (upload + download)
+            cumulative_comm_mb.append(total_bytes / (1024 * 1024))
+            acc_pct.append(round_data.get('avg_accuracy', 0.0) * 100.0)
+
+        return np.asarray(rounds), np.asarray(cumulative_comm_mb), np.asarray(acc_pct)
+
+    def plot_accuracy_vs_communication_tradeoff(self):
+        """Plot accuracy as a function of cumulative communication.
+
+        This makes it easy to see where ATLAS is better: ATLAS exceeds a baseline
+        when its curve is above the baseline curve for the same communication budget.
         """
-        print("Generating Figure 9: Clustering Map...")
+        print("Generating Figure 3: Accuracy vs Communication... ")
 
-        result = self.load_result('atlas_distilbert-base-uncased_atlas_seed42_r10.json')
+        configs = {
+            'ATLAS': 'atlas_distilbert-base-uncased_atlas_seed42_r10.json',
+            'FedAvg (Clustered)': 'atlas_distilbert-base-uncased_fedavg_cluster_seed42_r10.json',
+            'Standard FL': 'atlas_distilbert-base-uncased_standard_fl_seed42_r10.json',
+        }
+
+        fig, ax = plt.subplots(figsize=(6.5, 3.2), constrained_layout=True)
+
+        series = {}
+        for label, filename in configs.items():
+            result = self.load_result(filename)
+            rounds, cum_mb, acc_pct = self._extract_accuracy_vs_cumulative_comm(result)
+            if rounds is None:
+                continue
+            series[label] = (rounds, cum_mb, acc_pct)
+
+        if not series:
+            print("  Warning: no results available for tradeoff plot")
+            plt.close(fig)
+            return
+
+        for label, (_rounds, cum_mb, acc_pct) in series.items():
+            ax.plot(
+                cum_mb,
+                acc_pct,
+                label=label,
+                color=self._color(label),
+                linestyle=self._linestyle(label),
+                marker=self._marker(label),
+                markevery=1,
+                linewidth=1.5,
+                markersize=5,
+            )
+
+        # Optional: Highlight where ATLAS exceeds Standard FL (disabled for cleaner plot)
+        # if 'ATLAS' in series and 'Standard FL' in series:
+        #     pass
+
+        ax.set_xlabel('Cumulative Communication (MB)', fontweight='bold')
+        ax.set_ylabel('Average Accuracy (%)', fontweight='bold')
+        ax.set_title('Accuracy vs. Communication Budget', fontweight='bold')
+        ax.grid(True, alpha=0.3, linestyle='--', linewidth=0.5)
+        ax.legend(loc='best', framealpha=0.9, fontsize=8)
+
+        figfile = self.output_dir / 'fig3_accuracy_vs_communication.png'
+        fig.savefig(figfile, dpi=300)
+        print(f"  Saved to {figfile}")
+        plt.close(fig)
+
+
+    def plot_fingerprint_map(self):
+        """Generate a 2D fingerprint embedding map colored by cluster.
+
+        Uses PCA on stored gradient fingerprints (from Phase 1). The intent is
+        purely visual: clients that are close in fingerprint space should appear
+        close on the map, and cluster-colored points should form groups.
+        """
+        print("Generating Figure 9: Fingerprint Map...")
+
+        result = self.load_result('atlas_gpt2_atlas_seed123_r10.json')
         if result is None:
-            print("  Warning: Could not load result for clustering map")
+            print("  Warning: Could not load result for fingerprint map")
             return
 
-        # need cluster labels
-        if 'cluster_labels' not in result:
-            print("  Warning: No cluster_labels found in result")
+        fingerprints = result.get('fingerprints', {})
+        cluster_labels = result.get('cluster_labels', {})
+        if not fingerprints or not cluster_labels:
+            print("  Warning: Missing fingerprints and/or cluster_labels in result")
             return
 
-        cluster_labels = result['cluster_labels']
+        # Normalize dict keys
+        fingerprints = {str(k): np.asarray(v, dtype=float) for k, v in fingerprints.items()}
+        cluster_labels = {str(k): int(v) for k, v in cluster_labels.items()}
         clients = sorted([int(k) for k in cluster_labels.keys()])
-        clusters = [cluster_labels[str(c)] for c in clients]
-        num_clusters = max(clusters) + 1 if clusters else 0
+        clusters = [cluster_labels.get(str(c), 0) for c in clients]
+        unique_clusters = sorted(list(set(clusters)))
 
-        # Build per-client accuracy time-series matrix (clients x rounds)
-        rounds = [rd.get('round', i + 1) for i, rd in enumerate(result['round_metrics'])]
-        T = len(rounds)
+        # Build (n_clients x d) fingerprint matrix
         X = []
+        kept_clients = []
         for c in clients:
-            series = []
-            for rd in result['round_metrics']:
-                series.append(rd.get('test_accuracies', {}).get(str(c), 0.0))
-            X.append(series)
-        X = np.array(X)
+            fp = fingerprints.get(str(c), None)
+            if fp is None:
+                continue
+            X.append(fp.reshape(-1))
+            kept_clients.append(c)
+        if not X:
+            print("  Warning: No fingerprints found for clustered clients")
+            return
+        X = np.vstack(X)
 
-        # If no temporal info (T==1) try to augment with final accuracy and importance if available
-        if X.shape[1] <= 1:
-            alt = []
-            for i, c in enumerate(clients):
-                final_acc = X[i, -1] if X.shape[1] else 0.0
-                alt.append([final_acc])
-            X = np.array(alt)
-
-        # Standardize
-        X_mean = X.mean(axis=0)
-        Xc = X - X_mean
-
-        # Try t-SNE if available, else PCA via numpy SVD
+        # Use t-SNE for better cluster separation (fallback to PCA)
         try:
             from sklearn.manifold import TSNE
-            embed = TSNE(n_components=2, random_state=42, init='pca')
-            Y = embed.fit_transform(Xc)
+            Z = TSNE(n_components=2, random_state=42, perplexity=min(30, len(X)-1), n_iter=1000).fit_transform(X)
         except Exception:
-            # PCA fallback using SVD
             try:
-                # compute principal components via SVD on centered data
-                U, S, Vt = np.linalg.svd(Xc, full_matrices=False)
-                # scores = U * S, but U @ np.diag(S) gives same as Xc @ Vt.T
-                Y = Xc @ Vt.T[:, :2]
+                from sklearn.decomposition import PCA
+                Z = PCA(n_components=2, random_state=42).fit_transform(X)
             except Exception:
-                print('  Warning: embedding failed; cannot compute clustering map')
-                return
+                # numpy SVD fallback
+                Xc = X - X.mean(axis=0, keepdims=True)
+                _u, _s, vt = np.linalg.svd(Xc, full_matrices=False)
+                Z = Xc @ vt.T[:, :2]
 
-        # Plot embedding colored by cluster
+        # Colors
+        cluster_colors = plt.cm.Set3(np.linspace(0, 1, max(1, len(unique_clusters))))
+        cluster_to_color = {c: cluster_colors[i % len(cluster_colors)] for i, c in enumerate(unique_clusters)}
+        colors = [cluster_to_color.get(cluster_labels.get(str(c), 0), (0.2, 0.2, 0.2, 1.0)) for c in kept_clients]
+
         fig, ax = plt.subplots(figsize=(6.5, 4.0), constrained_layout=True)
-        cluster_colors = plt.cm.Set3(np.linspace(0, 1, max(1, num_clusters)))
-        colors = [cluster_colors[clusters[i] % len(cluster_colors)] for i in range(len(clients))]
+        ax.scatter(Z[:, 0], Z[:, 1], c=colors, s=90, edgecolor='black', linewidth=0.8, alpha=0.9)
 
-        sc = ax.scatter(Y[:, 0], Y[:, 1], c=colors, s=80, edgecolor='k', linewidth=0.7)
+        # Annotate client ids (small, but helps mapping)
+        for i, c in enumerate(kept_clients):
+            ax.text(Z[i, 0], Z[i, 1], str(c), fontsize=8, ha='center', va='center')
 
-        # Annotate client ids if not too many
-        if len(clients) <= 40:
-            for i, c in enumerate(clients):
-                ax.text(Y[i, 0], Y[i, 1], str(c), fontsize=7, va='center', ha='center')
-
-        # Legend for clusters
         from matplotlib.patches import Patch
-        legend_elems = [Patch(facecolor=cluster_colors[i % len(cluster_colors)], edgecolor='k', label=f'Cluster {i}')
-                        for i in range(num_clusters)]
-        if legend_elems:
-            ax.legend(handles=legend_elems, loc='best', framealpha=0.9, fontsize=8)
+        legend_elements = [
+            Patch(facecolor=cluster_to_color[c], edgecolor='black', label=f'Cluster {c}')
+            for c in unique_clusters
+        ]
+        if legend_elements:
+            ax.legend(handles=legend_elements, loc='best', framealpha=0.9, fontsize=8)
 
-        ax.set_xlabel('Embedding 1', fontweight='bold')
-        ax.set_ylabel('Embedding 2', fontweight='bold')
-        ax.set_title('Client Embedding Colored by Cluster', fontweight='bold')
+        ax.set_xlabel('Dimension 1', fontweight='bold')
+        ax.set_ylabel('Dimension 2', fontweight='bold')
+        ax.set_title('Client Fingerprint Clustering', fontweight='bold')
+        ax.grid(True, alpha=0.25, linestyle='--', linewidth=0.5)
+
+        figfile = self.output_dir / 'fig9_fingerprint_map.png'
+        fig.savefig(figfile, dpi=300)
+        print(f"  Saved to {figfile}")
+        plt.close(fig)
+
+    def plot_comm_needed_for_targets(self, targets=(79.0, 80.0)):
+        """Compute MB needed to reach target accuracies and save a small comparison figure.
+
+        Targets are in percentage points (e.g., 79.0 for 79%). We use the DistilBERT
+        results for the communication comparison (same files used elsewhere).
+        """
+        print("Generating: MB needed to reach target accuracies...")
+
+        configs = {
+            'ATLAS': 'atlas_distilbert-base-uncased_atlas_seed42_r10.json',
+            'Standard FL': 'atlas_distilbert-base-uncased_standard_fl_seed42_r10.json',
+        }
+
+        series = {}
+        for label, filename in configs.items():
+            result = self.load_result(filename)
+            rounds, cum_mb, acc_pct = self._extract_accuracy_vs_cumulative_comm(result)
+            if rounds is None:
+                continue
+            series[label] = (cum_mb, acc_pct)
+
+        if not series:
+            print("  Warning: no series available for comm-needed plot")
+            return
+
+        rows = []
+        for target in targets:
+            row = {'Target (%)': f"{target:.1f}%"}
+            for label, (cum_mb, acc_pct) in series.items():
+                # Find first cumulative MB where accuracy >= target
+                idx = np.where(acc_pct >= target)[0]
+                if idx.size == 0:
+                    mb = np.nan
+                else:
+                    i = idx[0]
+                    # linear interpolate for smoother number if possible
+                    if i == 0:
+                        mb = float(cum_mb[0])
+                    else:
+                        # interpolate between (i-1) and i
+                        x0, x1 = cum_mb[i-1], cum_mb[i]
+                        y0, y1 = acc_pct[i-1], acc_pct[i]
+                        if x1 == x0:
+                            mb = float(x1)
+                        else:
+                            t = (target - y0) / (y1 - y0) if (y1 - y0) != 0 else 0.0
+                            mb = float(x0 + t * (x1 - x0))
+                row[label] = mb
+            rows.append(row)
+
+        # Save a compact table-like figure
+        fig, ax = plt.subplots(figsize=(5.5, 2.2), constrained_layout=True)
+        ax.axis('off')
+        table_data = []
+        cols = ['Target (%)'] + list(series.keys())
+        for r in rows:
+            table_data.append([r.get(c, '') if not (isinstance(r.get(c,''), float) and np.isnan(r.get(c,''))) else 'N/A' for c in cols])
+
+        # format MB values nicely
+        for i in range(len(table_data)):
+            for j in range(1, len(cols)):
+                v = rows[i].get(cols[j])
+                table_data[i][j] = f"{v:.1f}" if (isinstance(v, float) and not np.isnan(v)) else 'N/A'
+
+        table = ax.table(cellText=table_data, colLabels=cols, cellLoc='center', loc='center')
+        table.auto_set_font_size(False)
+        table.set_fontsize(9)
+        table.scale(1.0, 1.3)
+        ax.set_title('MB Needed to Reach Target Accuracy', fontweight='bold')
+
+        figfile = self.output_dir / 'fig3_comm_to_reach_targets.png'
+        fig.savefig(figfile, dpi=300)
+        print(f"  Saved to {figfile}")
+        plt.close(fig)
+
+    def plot_pareto_frontier(self):
+        """Plot Pareto frontier (accuracy vs cumulative MB) across rounds for methods.
+
+        This shows per-round points and draws the non-dominated frontier (max acc
+        for a given communication budget), which highlights low-budget advantages.
+        """
+        print("Generating Pareto frontier plot...")
+
+        configs = {
+            'ATLAS': 'atlas_distilbert-base-uncased_atlas_seed42_r10.json',
+            'FedAvg (Clustered)': 'atlas_distilbert-base-uncased_fedavg_cluster_seed42_r10.json',
+            'Standard FL': 'atlas_distilbert-base-uncased_standard_fl_seed42_r10.json',
+        }
+
+        data = {}
+        for label, filename in configs.items():
+            result = self.load_result(filename)
+            rounds, cum_mb, acc_pct = self._extract_accuracy_vs_cumulative_comm(result)
+            if rounds is None:
+                continue
+            data[label] = (cum_mb, acc_pct)
+
+        if not data:
+            print('  Warning: no data for Pareto plot')
+            return
+
+        fig, ax = plt.subplots(figsize=(6.5, 4.0), constrained_layout=True)
+
+        # plot scatter points
+        for label, (cum_mb, acc_pct) in data.items():
+            ax.scatter(cum_mb, acc_pct, label=label, color=self._color(label), alpha=0.7, s=40, edgecolor='k')
+
+        # compute combined Pareto frontier from all points
+        all_points = []
+        for label, (cum_mb, acc_pct) in data.items():
+            for x, y in zip(cum_mb, acc_pct):
+                all_points.append((float(x), float(y)))
+        all_points = sorted(all_points, key=lambda p: (p[0], -p[1]))
+
+        # Non-dominated: for increasing comm, keep points with strictly increasing max acc
+        pareto_x = []
+        pareto_y = []
+        max_acc = -np.inf
+        for x, y in all_points:
+            if y > max_acc:
+                pareto_x.append(x)
+                pareto_y.append(y)
+                max_acc = y
+
+        if pareto_x:
+            ax.plot(pareto_x, pareto_y, color='black', linestyle='-', linewidth=1.5, label='Pareto frontier')
+            ax.scatter(pareto_x, pareto_y, color='black', s=30)
+
+        ax.set_xlabel('Cumulative Communication (MB)', fontweight='bold')
+        ax.set_ylabel('Average Accuracy (%)', fontweight='bold')
+        ax.set_title('Pareto Frontier: Accuracy vs Communication', fontweight='bold')
         ax.grid(True, alpha=0.25, linestyle='--')
+        ax.legend(loc='best', framealpha=0.9, fontsize=8)
 
-        figfile = self.output_dir / 'fig9_cluster_map.png'
+        figfile = self.output_dir / 'fig_pareto_accuracy_vs_comm.png'
         fig.savefig(figfile, dpi=300)
         print(f"  Saved to {figfile}")
         plt.close(fig)
+
     
-    def plot_importance_scores(self):
-        """Generate Figure 8: Layer Importance Scores."""
-        print("Generating Figure 8: Layer Importance Scores...")
+    def plot_parameter_efficiency(self):
+        """
+        Figure: Parameter Efficiency - Heterogeneous vs Homogeneous vs Full Fine-tuning
         
-        result = self.load_result('atlas_distilbert-base-uncased_atlas_seed42_r10.json')
-        if result is None:
-            print("  Warning: Could not load result for importance scores")
+        Creates a multi-panel figure showing:
+        1. Total trainable parameters comparison
+        2. Per-device parameter allocation
+        3. Layer-wise rank heatmap
+        4. Memory efficiency metrics
+        """
+        print("Generating Figure: Parameter Efficiency Comparison...")
+        
+        # Load one result from each method for DistilBERT
+        atlas_result = self.load_result('atlas_distilbert-base-uncased_atlas_seed42_r10.json')
+        std_fl_result = self.load_result('atlas_distilbert-base-uncased_standard_fl_seed42_r10.json')
+        
+        if not atlas_result or not std_fl_result:
+            print("  Warning: Could not load results for parameter efficiency plot")
             return
         
-        # Extract importance scores from phase2_rank_allocation
-        if 'phase2_rank_allocation' not in result:
-            print("  Warning: No importance scores found in result")
+        # Get phase2 rank allocation data
+        atlas_ranks = atlas_result.get('phase2_rank_allocation', [])
+        std_fl_ranks = std_fl_result.get('phase2_rank_allocation', [])
+        
+        if not atlas_ranks or not std_fl_ranks:
+            print("  Warning: No phase2_rank_allocation data found")
             return
         
-        # Get importance scores from first allocation (cluster 0)
-        allocations = result['phase2_rank_allocation']
-        if not allocations or 'importance_scores' not in allocations[0]:
-            print("  Warning: No importance scores in phase2_rank_allocation")
-            return
+        # Extract data
+        atlas_params = [c['lora_params'] for c in atlas_ranks]
+        std_fl_params = [c['lora_params'] for c in std_fl_ranks]
         
-        importance_scores = allocations[0]['importance_scores']
+        atlas_total = sum(atlas_params) / len(atlas_params)  # Average per client
+        std_fl_total = sum(std_fl_params) / len(std_fl_params)
         
-        # Prepare data: normalize to relative importance (percent)
-        layers = list(importance_scores.keys())
-        raw_scores = np.array([importance_scores[layer] for layer in layers], dtype=float)
-        total = raw_scores.sum() if raw_scores.size else 0.0
-        if total <= 0:
-            print("  Warning: importance scores sum to zero; skipping importance plots")
-            return
-
-        rel = raw_scores / total
-
-        # Create visualization (relative importance in percent) - main view
-        fig, ax = plt.subplots(figsize=(8.0, 3.5), constrained_layout=True)
-        colors_gradient = plt.cm.viridis(np.linspace(0.25, 0.85, len(layers)))
-
-        rel_pct = rel * 100.0
-        bars = ax.bar(range(len(layers)), rel_pct, color=colors_gradient,
-                      edgecolor='black', linewidth=1.0, alpha=0.95)
-
-        ax.set_xlabel('Layer', fontweight='bold')
-        ax.set_ylabel('Relative Importance (%)', fontweight='bold')
-        ax.set_title('Layer-wise Importance Scores', fontweight='bold')
-        ax.set_xticks(range(len(layers)))
-        ax.set_xticklabels(layers, rotation=45, ha='right', fontsize=9)
-        ax.grid(True, alpha=0.3, linestyle='--', linewidth=0.5, axis='y')
-
-        # Annotate bars with percent values and cap y-axis at 100%
-        for i, (bar, pct) in enumerate(zip(bars, rel_pct)):
+        # DistilBERT base has ~66M parameters
+        full_finetune_params = 66_000_000
+        
+        # Group by device type
+        device_types = ['cpu_2gb', 'tablet_4gb', 'laptop_8gb', 'gpu_16gb']
+        atlas_by_device = {dt: [] for dt in device_types}
+        std_fl_by_device = {dt: [] for dt in device_types}
+        
+        for c in atlas_ranks:
+            atlas_by_device[c['device']].append(c['lora_params'])
+        for c in std_fl_ranks:
+            std_fl_by_device[c['device']].append(c['lora_params'])
+        
+        # Average params per device type
+        atlas_device_avg = [np.mean(atlas_by_device[dt]) if atlas_by_device[dt] else 0 for dt in device_types]
+        std_fl_device_avg = [np.mean(std_fl_by_device[dt]) if std_fl_by_device[dt] else 0 for dt in device_types]
+        
+        # Extract rank matrices for heatmap
+        atlas_rank_matrix = np.array([c['ranks'] for c in atlas_ranks])
+        std_fl_rank_matrix = np.array([c['ranks'] for c in std_fl_ranks])
+        
+        # Create 2x2 figure
+        fig = plt.figure(figsize=(14, 10))
+        gs = fig.add_gridspec(2, 2, hspace=0.3, wspace=0.3)
+        
+        # ============ Panel A: Total Parameters Comparison ============
+        ax1 = fig.add_subplot(gs[0, 0])
+        
+        methods = ['ATLAS\n(Heterogeneous)', 'Standard FL\n(Homogeneous)', 'Full\nFine-tuning']
+        params = [atlas_total, std_fl_total, full_finetune_params]
+        colors_panel = ['#1f77b4', '#9467bd', '#d62728']
+        
+        bars = ax1.bar(methods, params, color=colors_panel, alpha=0.8, edgecolor='black', linewidth=1.5)
+        
+        # Add value labels on bars
+        for bar, param in zip(bars, params):
             height = bar.get_height()
-            ax.text(bar.get_x() + bar.get_width() / 2., height,
-                    f'{pct:.1f}%', ha='center', va='bottom', fontsize=8)
+            if param > 1_000_000:
+                label = f'{param/1_000_000:.1f}M'
+            else:
+                label = f'{param/1000:.0f}K'
+            ax1.text(bar.get_x() + bar.get_width()/2., height,
+                    label, ha='center', va='bottom', fontsize=11, fontweight='bold')
+        
+        ax1.set_ylabel('Trainable Parameters', fontsize=12, fontweight='bold')
+        ax1.set_title('(a) Total Trainable Parameters', fontsize=13, fontweight='bold', pad=10)
+        ax1.set_yscale('log')
+        ax1.grid(axis='y', alpha=0.3)
+        ax1.tick_params(axis='x', labelsize=10)
+        
+        # Add reduction annotations
+        reduction_atlas = (1 - atlas_total/full_finetune_params) * 100
+        reduction_std = (1 - std_fl_total/full_finetune_params) * 100
+        ax1.text(0.5, 0.95, f'ATLAS: {reduction_atlas:.1f}% reduction\nStd FL: {reduction_std:.1f}% reduction',
+                transform=ax1.transAxes, fontsize=9, verticalalignment='top',
+                bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5))
+        
+        # ============ Panel B: Per-Device Allocation ============
+        ax2 = fig.add_subplot(gs[0, 1])
+        
+        x = np.arange(len(device_types))
+        width = 0.35
+        
+        bars1 = ax2.bar(x - width/2, np.array(atlas_device_avg)/1000, width, 
+                       label='ATLAS (Heterogeneous)', color='#1f77b4', alpha=0.8, edgecolor='black')
+        bars2 = ax2.bar(x + width/2, np.array(std_fl_device_avg)/1000, width,
+                       label='Standard FL (Homogeneous)', color='#9467bd', alpha=0.8, edgecolor='black')
+        
+        ax2.set_xlabel('Device Type', fontsize=12, fontweight='bold')
+        ax2.set_ylabel('LoRA Parameters (×1000)', fontsize=12, fontweight='bold')
+        ax2.set_title('(b) Per-Device Parameter Allocation', fontsize=13, fontweight='bold', pad=10)
+        ax2.set_xticks(x)
+        ax2.set_xticklabels(['CPU\n2GB', 'Tablet\n4GB', 'Laptop\n8GB', 'GPU\n16GB'], fontsize=10)
+        ax2.legend(fontsize=9, loc='upper left')
+        ax2.grid(axis='y', alpha=0.3)
+        
+        # Add value labels
+        for bars in [bars1, bars2]:
+            for bar in bars:
+                height = bar.get_height()
+                if height > 0:
+                    ax2.text(bar.get_x() + bar.get_width()/2., height,
+                            f'{height:.0f}K', ha='center', va='bottom', fontsize=8)
+        
+        # ============ Panel C: ATLAS Rank Heatmap ============
+        ax3 = fig.add_subplot(gs[1, 0])
+        
+        # Sort by device type for better visualization
+        device_order = []
+        for dt in device_types:
+            device_order.extend([i for i, c in enumerate(atlas_ranks) if c['device'] == dt])
+        
+        atlas_sorted = atlas_rank_matrix[device_order]
+        
+        im1 = ax3.imshow(atlas_sorted, cmap='YlOrRd', aspect='auto', interpolation='nearest')
+        ax3.set_xlabel('Layer Index', fontsize=12, fontweight='bold')
+        ax3.set_ylabel('Client ID', fontsize=12, fontweight='bold')
+        ax3.set_title('(c) ATLAS: Heterogeneous Ranks', fontsize=13, fontweight='bold', pad=10)
+        ax3.set_xticks(range(len(atlas_ranks[0]['ranks'])))
+        ax3.set_xticklabels(range(len(atlas_ranks[0]['ranks'])))
+        
+        # Add colorbar
+        cbar1 = plt.colorbar(im1, ax=ax3)
+        cbar1.set_label('LoRA Rank', rotation=270, labelpad=15, fontsize=10)
+        
+        # Add device type annotations on y-axis
+        y_pos = 0
+        for dt in device_types:
+            n_clients = len([c for c in atlas_ranks if c['device'] == dt])
+            if n_clients > 0:
+                ax3.axhline(y_pos, color='white', linewidth=2, linestyle='--', alpha=0.5)
+                ax3.text(-0.5, y_pos + n_clients/2, dt.replace('_', '\n'), 
+                        fontsize=8, ha='right', va='center')
+                y_pos += n_clients
+        
+        # ============ Panel D: Standard FL Rank Heatmap ============
+        ax4 = fig.add_subplot(gs[1, 1])
+        
+        im2 = ax4.imshow(std_fl_rank_matrix, cmap='YlOrRd', aspect='auto', interpolation='nearest')
+        ax4.set_xlabel('Layer Index', fontsize=12, fontweight='bold')
+        ax4.set_ylabel('Client ID', fontsize=12, fontweight='bold')
+        ax4.set_title('(d) Standard FL: Homogeneous Ranks', fontsize=13, fontweight='bold', pad=10)
+        ax4.set_xticks(range(len(std_fl_ranks[0]['ranks'])))
+        ax4.set_xticklabels(range(len(std_fl_ranks[0]['ranks'])))
+        
+        # Add colorbar
+        cbar2 = plt.colorbar(im2, ax=ax4)
+        cbar2.set_label('LoRA Rank', rotation=270, labelpad=15, fontsize=10)
+        
+        # Overall title
+        fig.suptitle('Parameter Efficiency: Heterogeneous vs Homogeneous LoRA Allocation',
+                    fontsize=15, fontweight='bold', y=0.995)
+        
+        # Save
+        output_path = self.output_dir / 'fig_parameter_efficiency.png'
+        plt.savefig(output_path, dpi=300, bbox_inches='tight')
+        plt.close()
+        
+        print(f"  ✓ Saved: {output_path}")
+        print(f"    ATLAS avg: {atlas_total/1000:.1f}K params")
+        print(f"    Standard FL avg: {std_fl_total/1000:.1f}K params")
+        print(f"    Full fine-tuning: {full_finetune_params/1_000_000:.1f}M params")
 
-        ax.set_ylim(0, max(100.0, rel_pct.max() * 1.05))
+    def plot_device_parameter_allocation(self):
+        """
+        Standalone Figure: Per-Device Parameter Allocation
+        Shows heterogeneous vs homogeneous LoRA parameter allocation across device types
+        """
+        print("Generating Figure: Per-Device Parameter Allocation...")
+        
+        # Load one result from each method for DistilBERT
+        atlas_result = self.load_result('atlas_distilbert-base-uncased_atlas_seed42_r10.json')
+        std_fl_result = self.load_result('atlas_distilbert-base-uncased_standard_fl_seed42_r10.json')
+        
+        if not atlas_result or not std_fl_result:
+            print("  Warning: Could not load results for device allocation plot")
+            return
+        
+        # Get phase2 rank allocation data
+        atlas_ranks = atlas_result.get('phase2_rank_allocation', [])
+        std_fl_ranks = std_fl_result.get('phase2_rank_allocation', [])
+        
+        if not atlas_ranks or not std_fl_ranks:
+            print("  Warning: No phase2_rank_allocation data found")
+            return
+        
+        # Group by device type
+        device_types = ['cpu_2gb', 'tablet_4gb', 'laptop_8gb', 'gpu_16gb']
+        device_labels = ['CPU\n2GB', 'Tablet\n4GB', 'Laptop\n8GB', 'GPU\n16GB']
+        
+        atlas_by_device = {dt: [] for dt in device_types}
+        std_fl_by_device = {dt: [] for dt in device_types}
+        
+        for c in atlas_ranks:
+            atlas_by_device[c['device']].append(c['lora_params'])
+        for c in std_fl_ranks:
+            std_fl_by_device[c['device']].append(c['lora_params'])
+        
+        # Average params per device type
+        atlas_device_avg = [np.mean(atlas_by_device[dt])/1000 if atlas_by_device[dt] else 0 for dt in device_types]
+        std_fl_device_avg = [np.mean(std_fl_by_device[dt])/1000 if std_fl_by_device[dt] else 0 for dt in device_types]
+        
+        # Create figure
+        fig, ax = plt.subplots(figsize=(10, 6))
+        
+        x = np.arange(len(device_types))
+        width = 0.35
+        
+        bars1 = ax.bar(x - width/2, atlas_device_avg, width, 
+                       label='ATLAS (Heterogeneous)', color='#1f77b4', alpha=0.85, 
+                       edgecolor='black', linewidth=1.5)
+        bars2 = ax.bar(x + width/2, std_fl_device_avg, width,
+                       label='Standard FL (Homogeneous)', color='#9467bd', alpha=0.85, 
+                       edgecolor='black', linewidth=1.5)
+        
+        ax.set_xlabel('Device Type', fontsize=14, fontweight='bold')
+        ax.set_ylabel('LoRA Parameters (×1000)', fontsize=14, fontweight='bold')
+        ax.set_title('Per-Device Parameter Allocation: Heterogeneous vs Homogeneous', 
+                    fontsize=15, fontweight='bold', pad=15)
+        ax.set_xticks(x)
+        ax.set_xticklabels(device_labels, fontsize=12)
+        ax.legend(fontsize=12, loc='upper left', framealpha=0.95)
+        ax.grid(axis='y', alpha=0.3, linestyle='--')
+        
+        # Add value labels on bars
+        for bars in [bars1, bars2]:
+            for bar in bars:
+                height = bar.get_height()
+                if height > 0:
+                    ax.text(bar.get_x() + bar.get_width()/2., height,
+                            f'{height:.0f}K', ha='center', va='bottom', 
+                            fontsize=11, fontweight='bold')
+        
+        plt.tight_layout()
+        
+        # Save
+        output_path = self.output_dir / 'fig_device_allocation.png'
+        plt.savefig(output_path, dpi=300, bbox_inches='tight')
+        plt.close()
+        
+        print(f"  ✓ Saved: {output_path}")
 
-        figfile = self.output_dir / 'fig8_importance_scores.png'
-        fig.savefig(figfile, dpi=300)
-        print(f"  Saved to {figfile}")
-        plt.close(fig)
+    def plot_atlas_vs_qwen_params(self):
+        """
+        Figure: ATLAS vs Qwen2.5-0.5B Parameter Comparison
+        Simple bar chart comparing ATLAS LoRA parameters vs full Qwen2.5-0.5B fine-tuning
+        """
+        print("Generating Figure: ATLAS vs Qwen2.5-0.5B Parameter Comparison...")
+        
+        # Load ATLAS result for Qwen
+        atlas_result = self.load_result('atlas_Qwen_Qwen2.5-0.5B_atlas_seed42_r10.json')
+        
+        if not atlas_result:
+            print("  Warning: Could not load Qwen ATLAS results")
+            return
+        
+        # Get phase2 rank allocation data
+        atlas_ranks = atlas_result.get('phase2_rank_allocation', [])
+        
+        if not atlas_ranks:
+            print("  Warning: No phase2_rank_allocation data found")
+            return
+        
+        # Extract ATLAS parameters
+        atlas_params = [c['lora_params'] for c in atlas_ranks]
+        atlas_total = sum(atlas_params) / len(atlas_params)  # Average per client
+        
+        # Qwen2.5-0.5B has 500M parameters
+        qwen_full_params = 500_000_000
+        
+        # Create figure - similar style to the provided image
+        fig, ax = plt.subplots(figsize=(8, 6))
+        
+        methods = ['ATLAS\n(Heterogeneous)', 'Full\nFine-tuning']
+        params = [atlas_total, qwen_full_params]
+        colors_panel = ['#1f77b4', '#d62728']
+        
+        bars = ax.bar(methods, params, color=colors_panel, alpha=0.8, 
+                     edgecolor='black', linewidth=2)
+        
+        # Add value labels on bars
+        for bar, param in zip(bars, params):
+            height = bar.get_height()
+            if param > 1_000_000:
+                label = f'{param/1_000_000:.1f}M'
+            else:
+                label = f'{param/1000:.0f}K'
+            ax.text(bar.get_x() + bar.get_width()/2., height * 0.5,
+                   label, ha='center', va='center', fontsize=14, 
+                   fontweight='bold', color='white')
+        
+        ax.set_ylabel('Trainable Parameters', fontsize=14, fontweight='bold')
+        ax.set_title('Total Trainable Parameters\nATLAS vs Qwen2.5-0.5B Full Fine-tuning', 
+                    fontsize=15, fontweight='bold', pad=15)
+        ax.set_yscale('log')
+        ax.grid(axis='y', alpha=0.3, linestyle='--')
+        ax.tick_params(axis='x', labelsize=12)
+        ax.set_ylim(bottom=10000)  # Start from 10K to show the difference better
+        
+        # Add reduction annotation with background box
+        reduction_atlas = (1 - atlas_total/qwen_full_params) * 100
+        textstr = f'ATLAS: {reduction_atlas:.2f}% reduction'
+        props = dict(boxstyle='round', facecolor='#ffebcd', alpha=0.8, edgecolor='black', linewidth=1.5)
+        ax.text(0.5, 0.95, textstr,
+                transform=ax.transAxes, fontsize=12, fontweight='bold',
+                verticalalignment='top', horizontalalignment='center',
+                bbox=props)
+        
+        plt.tight_layout()
+        
+        # Save
+        output_path = self.output_dir / 'fig_atlas_vs_qwen_params.png'
+        plt.savefig(output_path, dpi=300, bbox_inches='tight')
+        plt.close()
+        
+        print(f"  ✓ Saved: {output_path}")
+        print(f"    ATLAS avg: {atlas_total/1000:.1f}K params")
+        print(f"    Qwen2.5-0.5B full: {qwen_full_params/1_000_000:.1f}M params")
+        print(f"    Reduction: {reduction_atlas:.2f}%")
 
-        # Complementary log-scale view of raw scores so small contributors are visible
-        try:
-            fig, ax = plt.subplots(figsize=(8.0, 3.5), constrained_layout=True)
-            eps = 1e-8
-            ax.bar(range(len(layers)), np.log10(raw_scores + eps), color=colors_gradient,
-                   edgecolor='black', linewidth=1.0, alpha=0.95)
-            ax.set_xticks(range(len(layers)))
-            ax.set_xticklabels(layers, rotation=45, ha='right', fontsize=9)
-            ax.set_ylabel('log10(Raw importance + eps)', fontweight='bold')
-            ax.set_title('Layer-wise Importance (log scale)', fontweight='bold')
-            ax.grid(True, alpha=0.3, linestyle='--', linewidth=0.5, axis='y')
-            figfile = self.output_dir / 'fig8_importance_scores_log.png'
-            fig.savefig(figfile, dpi=300)
-            print(f"  Saved to {figfile}")
-            plt.close(fig)
-        except Exception:
-            pass
-
-        # Also create a pie chart for relative importance (show top contributors)
-        fig, ax = plt.subplots(figsize=(6.0, 6.0), constrained_layout=True)
-
-        threshold = 0.05  # show layers >=5% individually
-        major_layers = [layers[i] for i in range(len(layers)) if rel[i] >= threshold]
-        major_scores = [rel[i] for i in range(len(layers)) if rel[i] >= threshold]
-        other_score = rel[rel < threshold].sum()
-        if other_score > 0:
-            major_layers.append('Others')
-            major_scores.append(other_score)
-
-        colors_pie = plt.cm.Set3(np.linspace(0, 1, max(1, len(major_layers))))
-        wedges, texts, autotexts = ax.pie(major_scores, labels=major_layers,
-                                           autopct='%1.1f%%', startangle=90,
-                                           colors=colors_pie,
-                                           textprops={'fontsize': 10, 'fontweight': 'bold'})
-
-        ax.set_title('Relative Layer Importance', fontweight='bold', fontsize=12)
-
-        figfile = self.output_dir / 'fig8_importance_distribution.png'
-        fig.savefig(figfile, dpi=300)
-        print(f"  Saved to {figfile}")
-        plt.close(fig)
-    
     def generate_all_plots(self):
         """Generate all publication plots."""
         print("\n" + "="*60)
         print("Generating IEEE-Quality Publication Plots")
         print("="*60 + "\n")
+
+        # Clean old PNGs so only the remaining plots are kept.
+        for fp in self.output_dir.glob('*.png'):
+            try:
+                fp.unlink()
+            except Exception:
+                pass
         
         self.plot_ablation_study()
         self.plot_model_comparison()
-        self.plot_communication_efficiency()
-        self.plot_clustering_analysis()
-        self.plot_convergence_speed()
-        self.plot_clustering_visualization()
-        self.plot_importance_scores()
+        self.plot_accuracy_vs_communication_tradeoff()
+        # Communication-efficiency focused figures
+        self.plot_comm_needed_for_targets(targets=(79.0, 80.0))
+        self.plot_pareto_frontier()
+        self.plot_fingerprint_map()
+        # Parameter efficiency
+        self.plot_parameter_efficiency()
+        self.plot_device_parameter_allocation()
+        self.plot_atlas_vs_qwen_params()
         
         print("\n" + "="*60)
         print("All plots generated successfully!")

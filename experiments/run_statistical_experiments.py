@@ -128,8 +128,10 @@ class StatisticalExperimentRunner:
         if 'fingerprint_batches' in self.base_config:
             cmd.extend(['--fingerprint-batches', str(self.base_config['fingerprint_batches'])])
         
-        # Result file path (include seed to avoid overwriting other runs)
-        result_file = f"results/atlas_integrated_{self.base_config['mode']}_{config}_seed{seed}.json"
+        # Result file path written by `experiments/atlas_integrated.py`
+        model_norm = str(self.base_config.get('model', 'model')).replace('/', '_').replace('\\', '_')
+        rounds = int(self.base_config.get('rounds', 10))
+        result_file = f"results/atlas_{model_norm}_{config}_seed{seed}_r{rounds}.json"
         
         try:
             # Run experiment

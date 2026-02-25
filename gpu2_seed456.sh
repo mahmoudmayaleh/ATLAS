@@ -3,35 +3,59 @@
 # Supports: gpt2, gpt2-xl, qwen-0.5b
 # Runs 10 rounds in one shot with all professional metrics
 
-set -e
+set -euo pipefail
+IFS=$'\n\t'
 
 
-# Detect Python command (python3 or python)
-if command -v python3 &> /dev/null; then
-    PYTHON_CMD="python3"
-elif command -v python &> /dev/null; then
-    PYTHON_CMD="python"
-else
-    echo "Error: Python not found. Please activate your conda environment first."
-    echo "Try: conda activate atlas_env"
-    exit 1
+# Detect Python command (python3 or python). Allow override via PYTHON_CMD env.
+PYTHON_CMD=${PYTHON_CMD:-}
+if [ -z "$PYTHON_CMD" ]; then
+    if command -v python3 &> /dev/null; then
+        PYTHON_CMD="python3"
+    elif command -v python &> /dev/null; then
+        PYTHON_CMD="python"
+    else
+        echo "Error: Python not found. Please activate your conda/venv environment first or set PYTHON_CMD."
+        echo "Example: conda activate atlas_env  # or: export PYTHON_CMD=/path/to/python"
+        exit 1
+    fi
 fi
 
-echo "Using Python: $PYTHON_CMD ($(which $PYTHON_CMD))"
+echo "Using Python: $PYTHON_CMD ($(command -v "$PYTHON_CMD"))"
 
 # Parse arguments
 MODEL=${1:-gpt2-xl}
 METHOD=${2:-atlas}
 
-# Validate arguments
+# GPU selection: default to GPU 2 for this script. Override with GPU_ID env var.
+GPU_ID=${GPU_ID:-2}
+export CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-$GPU_ID}
+
+# Optional conda env name to auto-activate (set CONDA_ENV env var), or
+# set VENV_PATH to point to a Python venv directory (then PYTHON_CMD will be set).
+if [ -n "${CONDA_ENV:-}" ]; then
+    if command -v conda &> /dev/null; then
+        eval "$(conda shell.bash hook)" || true
+        conda activate "${CONDA_ENV}" || true
+        echo "Activated conda env: ${CONDA_ENV}"
+    else
+        echo "CONDA_ENV set but conda not found in PATH"
+    fi
+fi
+if [ -n "${VENV_PATH:-}" ]; then
+    if [ -f "${VENV_PATH}/bin/activate" ]; then
+        # shellcheck disable=SC1091
+        source "${VENV_PATH}/bin/activate"
+        echo "Activated venv: ${VENV_PATH}"
+    else
+        echo "VENV_PATH set but no activate script found at ${VENV_PATH}/bin/activate"
+    fi
+fi
+
+# Validate arguments (simple check)
 VALID_MODELS=("distilbert-base-uncased" "gpt2" "gpt2-xl" "Qwen/Qwen2.5-0.5B")
 if [[ ! " ${VALID_MODELS[@]} " =~ " ${MODEL} " ]]; then
-    echo "Error: Invalid model '${MODEL}'"
-    echo "Valid models: distilbert-base-uncased, gpt2, gpt2-xl, Qwen/Qwen2.5-0.5B"
-    echo "Usage: $0 <model> <method>"
-    echo "  model:  distilbert-base-uncased | gpt2 | gpt2-xl | Qwen/Qwen2.5-0.5B (default: gpt2-xl)"
-    echo "  method: atlas | atlas_no_laplacian | fedavg_cluster | standard_fl | local_only (default: atlas)"
-    exit 1
+    echo "Warning: Model '${MODEL}' not in the quick-validated list. Proceeding anyway."
 fi
 
 if [[ ! "$METHOD" =~ ^(atlas|atlas_no_laplacian|fedavg_cluster|standard_fl|local_only)$ ]]; then
@@ -56,39 +80,46 @@ echo "========================================"
 echo "GPU 2 - Seed $SEED"
 echo "Model: $MODEL | Method: $METHOD"
 echo "Rounds: $ROUNDS (one shot)"
+echo "CUDA_VISIBLE_DEVICES=$CUDA_VISIBLE_DEVICES"
 echo "========================================"
 
 # Build command - model-specific hyperparameters loaded automatically
 OUTPUT_FILE="results/atlas_${MODEL_NORMALIZED}_${METHOD}_seed${SEED}_r${ROUNDS}.json"
 
-CMD="$PYTHON_CMD experiments/atlas_integrated.py \
-    --mode full \
-    --ablation $METHOD \
-    --model $MODEL \
-    --tasks $TASKS \
-    --clients-per-task $CLIENTS_PER_TASK \
-    --rounds $ROUNDS \
-    --seed $SEED"
+CMD=("$PYTHON_CMD" "experiments/atlas_integrated.py"
+    --mode full
+    --ablation "$METHOD"
+    --model "$MODEL"
+    --tasks $TASKS
+    --clients-per-task "$CLIENTS_PER_TASK"
+    --rounds "$ROUNDS"
+    --seed "$SEED")
 
-# Run experiment
-echo ""
-echo "[START] $CMD"
-echo ""
-eval $CMD
+# Log file (includes timestamp)
+TS=$(date +"%Y%m%d_%H%M%S")
+LOGFILE="logs/gpu2_${MODEL_NORMALIZED}_${METHOD}_seed${SEED}_r${ROUNDS}_${TS}.log"
 
-if [ $? -eq 0 ]; then
+echo ""
+echo "[START] ${CMD[*]}"
+echo "Logging to: $LOGFILE"
+echo ""
+
+# Run and tee output
+"${CMD[@]}" 2>&1 | tee -a "$LOGFILE"
+
+EXIT_CODE=${PIPESTATUS[0]:-0}
+
+if [ $EXIT_CODE -eq 0 ]; then
     echo ""
     echo "[SUCCESS] Experiment complete for $METHOD (seed $SEED, model $MODEL)"
     
-    # Find and rename the generated results file
-    GENERATED="results/atlas_integrated_full_${METHOD}_seed${SEED}.json"
-    if [ -f "$GENERATED" ]; then
-        mv "$GENERATED" "$OUTPUT_FILE"
+    # The runner writes the canonical output filename directly.
+    if [ -f "$OUTPUT_FILE" ]; then
         echo "Results saved: $OUTPUT_FILE"
     else
-        echo "[WARN] Expected results file not found: $GENERATED"
-        echo "[INFO] Checking for alternative result files..."
-        find results/ -name "*${METHOD}*seed${SEED}*.json" -type f -mmin -10
+        echo "[WARN] Expected results file not found: $OUTPUT_FILE"
+        echo "[INFO] Checking for recent result files (last 3 hours)..."
+        find results/ -name "*${METHOD}*seed${SEED}*.json" -type f -mmin -180 -print || true
     fi
     
     echo ""
@@ -96,6 +127,6 @@ if [ $? -eq 0 ]; then
     echo "Model: $MODEL | Seed: $SEED | Method: $METHOD | Rounds: $ROUNDS"
 else
     echo ""
-    echo "[FAILED] Experiment failed"
-    exit 1
+    echo "[FAILED] Experiment failed (exit code: $EXIT_CODE)"
+    exit $EXIT_CODE
 fi

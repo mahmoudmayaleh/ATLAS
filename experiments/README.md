@@ -2,6 +2,11 @@
 
 This directory contains the complete experimental framework for validating and benchmarking the ATLAS federated learning system.
 
+## Important
+
+- For **real, publication-quality runs**, use `experiments/atlas_integrated.py` (this is the integrated pipeline that produces the JSON logs consumed by the plotting/table scripts).
+- `experiments/run_experiments.py` is **legacy/partial** and includes placeholder baselines; it is blocked by default unless you pass `--legacy-ok`.
+
 ## Structure
 
 ```
@@ -20,18 +25,15 @@ experiments/
 
 ```powershell
 cd c:\Users\Hp\Downloads\Advanced_project\ATLAS
-python experiments\run_experiments.py --mode quick
+python experiments\atlas_integrated.py --mode quick --ablation atlas --rounds 3 --samples 200 --local-epochs 1
 ```
 
-This runs 2 quick experiments (~5 minutes):
-
-- `quick_sst2_atlas`: ATLAS on SST-2 (20 rounds)
-- `quick_sst2_baseline`: Homogeneous LoRA baseline
+This runs a short integrated sanity run and writes a results JSON under `results/`.
 
 ### Run Full Experiment Suite
 
 ```powershell
-python experiments\run_experiments.py --mode full --save-dir ./results
+python experiments\run_statistical_experiments.py --seeds 3 --configs atlas fedavg_cluster local_only
 ```
 
 This runs comprehensive experiments:

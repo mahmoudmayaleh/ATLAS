@@ -1261,6 +1261,8 @@ class ATLASIntegratedTrainer:
         }
 
         round_accuracies: Dict[int, float] = {}
+        round_canonical: Dict[int, float] = {}
+        round_f1s: Dict[int, float] = {}
         
         for round_idx in range(start_round, self.config.num_rounds):
             round_start = time.time()
@@ -1535,6 +1537,7 @@ class ATLASIntegratedTrainer:
             print(f"\n[Round {round_idx+1}] Evaluation...")
             round_accuracies = {}
             round_f1s = {}
+            round_canonical = {}
             
             for client_data in self.clients_data:
                 cid = client_data.client_id
@@ -1542,12 +1545,13 @@ class ATLASIntegratedTrainer:
 
                 # Move model to GPU for evaluation
                 model.to(self.device)
-                acc, loss, f1 = self._evaluate_client(
+                acc, loss, f1, canonical = self._evaluate_client(
                     model,
                     client_data.test_dataset
                 )
                 round_accuracies[cid] = acc
                 round_f1s[cid] = f1
+                round_canonical[cid] = canonical
                 print(f"  Client {cid} ({client_data.task_name}): acc={acc:.4f}, f1={f1:.4f}, loss={loss:.4f}")
 
                 # Move model back to CPU after evaluation
@@ -1785,7 +1789,7 @@ class ATLASIntegratedTrainer:
         Supports DistilBERT, GPT-2, and Qwen2/LLaMA architectures.
         """
         # Unwrap PEFT shell to reach the underlying HuggingFace model.
-        base = model.base_model.model if hasattr(model, 'base_model') else model # pyright: ignore[reportAttributeAccessIssue]
+        base: Any = model.base_model.model if hasattr(model, 'base_model') else model  # type: ignore[union-attr]
 
         # ---- DistilBERT ----
         if hasattr(base, 'distilbert'):

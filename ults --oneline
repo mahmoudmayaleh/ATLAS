@@ -1,0 +1,20 @@
+* [33m0805c85[m[33m ([m[1;36mHEAD -> [m[1;32mmain[m[33m, [m[1;31morigin/main[m[33m)[m figs
+* [33mf1c42ef[m before final
+* [33m7c95000[m fixed fingerprints
+* [33m458e3bc[m new results quen2.5
+* [33m4dde65d[m update
+* [33mdffa61a[m new results qwen
+* [33m213825f[m remove tokens
+* [33m625e4ba[m new resutls gpt2
+* [33md09ac7d[m fix: resolve model alias to HF repo id before creating ATLASConfig (distilbert -> distilbert-base-uncased)
+* [33m189b62f[m scripts: accept atlas_no_laplacian and standard_fl methods in GPU runner scripts
+* [33m648b9c8[m experiments: add progressive ablation modes (atlas_no_laplacian, fedavg_cluster, standard_fl) and support in runner
+* [33mec4c7b5[m nothing
+* [33mcf2bf8b[m new results
+* [33m84d7775[m new results
+* [33m8038e57[m new results
+* [33mb42e064[m config: unify local_epochs=3 for all models
+* [33ma89a875[m Add dynamic model support: DistilBERT, GPT-2, GPT-2 XL, Qwen2.5
+* [33m4f9bcae[m Update scripts and environment setup
+* [33ma208505[m Update GPU scripts: use --mode full and create session-specific result filenames for gpt2-xl
+* [33mb716096[m Delete gpu1_seed123_lowmem.sh

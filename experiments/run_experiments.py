@@ -475,8 +475,16 @@ if __name__ == "__main__":
     parser.add_argument("--name", type=str, help="Single experiment name (for --mode single)")
     parser.add_argument("--save-dir", type=str, default="./results",
                        help="Directory to save results")
+    parser.add_argument("--legacy-ok", action="store_true",
+                       help="ALLOW running this legacy runner (contains placeholder baselines).")
     
     args = parser.parse_args()
+
+    if not args.legacy_ok:
+        raise SystemExit(
+            "[BLOCKED] experiments/run_experiments.py is a legacy/partial runner and can produce placeholder results.\n"
+            "Use experiments/atlas_integrated.py for real experiments, or re-run with --legacy-ok if you *really* intend to run this file."
+        )
     
     if args.mode == "quick":
         print("[START] Running quick experiments...")
