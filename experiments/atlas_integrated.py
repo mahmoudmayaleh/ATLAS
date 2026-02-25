@@ -643,9 +643,10 @@ class ATLASIntegratedTrainer:
             raw_grad, layer_imp, per_batch_grads = self._extract_fingerprint(model, client_data.train_dataset)
             raw_gradients[client_data.client_id] = raw_grad
             layer_importances[client_data.client_id] = layer_imp
-            # Append per-batch gradient dicts (if any) so PCA has more samples
+            # Append a few per-batch gradient dicts so PCA has more samples.
+            # Cap at 3 per client to avoid O(clients × batches) PCA slowdown.
             if per_batch_grads:
-                for pg in per_batch_grads:
+                for pg in per_batch_grads[:3]:
                     grad_samples.append(pg)
 
             del model
