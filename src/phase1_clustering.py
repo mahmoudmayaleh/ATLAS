@@ -288,76 +288,44 @@ class GradientExtractor:
 
 class TaskClusterer:
     """
-    Cluster clients into task groups using k-Means on gradient fingerprints.
-    
-    Improvements for heterogeneous FL:
+    Cluster clients into task groups using k-Means on PCA-projected gradient fingerprints.
+
+    Features:
     - Multi-metric k selection (Silhouette + Davies-Bouldin + Calinski-Harabasz)
     - Temporal stability (initialize with previous centroids)
     - Minimum cluster size enforcement
     - Cluster-level summaries for Phase 2 integration
     """
-    
-    def __init__(self, n_clusters_range: Tuple[int, int] = (2, 5),
-                 min_cluster_size: int = 2,
-                 temporal_consistency_weight: float = 0.0,
-                 fixed_k: Optional[int] = None):
+
+    def __init__(self, n_clusters_range: tuple = (2, 5), fixed_k: int = None,
+                 min_cluster_size: int = 2, temporal_consistency_weight: float = 0.0):
         """
         Initialize TaskClusterer.
-        
-        Args:
-            n_clusters_range: (min, max) number of clusters to try (ignored if fixed_k is set)
-            min_cluster_size: Minimum number of clients per cluster
-            temporal_consistency_weight: Weight for temporal stability (0 = no consistency)
-            fixed_k: If set, uses this fixed number of clusters
-        """
-        self.n_clusters_range = n_clusters_range
-        self.min_cluster_size = min_cluster_size
-        self.temporal_consistency_weight = temporal_consistency_weight
-        self.fixed_k = fixed_k
-        self.best_kmeans = None
-        self.best_score = -1
-        self.best_n_clusters = None
-        self.labels_ = None
-        self.prev_labels_ = None  # For temporal consistency
-        self.cluster_centers_ = None
-        self.metrics_ = {}
-        self.cluster_summaries_ = {}  # For Phase 2 integrationtractor loaded from {path}")
 
-
-class TaskClusterer:
-    """
-    Cluster clients into task groups using k-Means on gradient fingerprints.
-    
-    Automatically selects optimal number of clusters based on Silhouette score.
-    """
-    
-    def __init__(self, n_clusters_range: tuple = (2, 5), fixed_k: int = None, min_cluster_size: int = 2):
-        """
-        Initialize TaskClusterer.
-        
         Args:
             n_clusters_range: Tuple of (min, max) clusters to try
             fixed_k: If provided, use fixed number of clusters (no auto-selection)
             min_cluster_size: Minimum samples per cluster
+            temporal_consistency_weight: Weight for temporal stability (0 = off)
         """
         self.n_clusters_range = n_clusters_range
         self.fixed_k = fixed_k
         self.min_cluster_size = min_cluster_size
-        # For temporal consistency (tracks previous clustering)
+        self.temporal_consistency_weight = temporal_consistency_weight
+
+        # Clustering state
         self.prev_labels_ = None
-        # Weight for temporal consistency when selecting best k
-        self.temporal_consistency_weight = 0.0
         self.best_kmeans = None
         self.best_n_clusters = None
         self.best_score = -1.0
-        
-        # Clustering state
         self.labels_ = None
         self.cluster_centers_ = None
         self.n_clusters_ = None
         self.silhouette_score_ = None
         self.inertia_ = None
-        
+        self.metrics_ = {}
+        self.cluster_summaries_ = {}   # For Phase 2 integration
+
         # History for temporal stability
         self.history = []
     
@@ -686,6 +654,144 @@ class TaskClusterer:
         self.labels_ = self.best_kmeans.labels_
         self.cluster_centers_ = self.best_kmeans.cluster_centers_
         print(f"TaskClusterer loaded from {path}")
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# CFL-style Cosine Similarity + Hierarchical Clustering  (Sattler et al. 2021)
+# ──────────────────────────────────────────────────────────────────────────────
+class CFLClusterer:
+    """
+    Cluster clients using pairwise cosine similarity on gradient vectors.
+
+    Scientific basis (CFL, IEEE TNNLS 2021)
+    ----------------------------------------
+    Works entirely in the n×n similarity space instead of the n×p feature
+    space, so it is completely immune to the HDLSS curse of dimensionality
+    that breaks KMeans when n=12 and p=591 000.
+
+    Algorithm
+    ---------
+    1. Receive S ∈ R^{n×n}: S[i,j] = cosine_similarity(ḡ_i, ḡ_j)
+    2. Convert to distance: D = clip(1 - S, 0, 2); fill_diagonal(D, 0)
+    3. Run scipy hierarchical clustering (complete linkage) on D
+    4. Cut dendrogram at exactly n_clusters leaves
+    5. Compute silhouette on D with metric='precomputed'
+    """
+
+    def __init__(self, n_clusters: int = 4, linkage_method: str = 'complete'):
+        """
+        Args:
+            n_clusters: Number of clusters to cut the dendrogram at.
+                        Should equal len(tasks) so each task gets one cluster.
+            linkage_method: 'complete' (max-distance) recommended for CFL.
+                            'ward' is also valid but requires Euclidean distances.
+        """
+        self.n_clusters = n_clusters
+        self.linkage_method = linkage_method
+        self.labels_: Optional[np.ndarray] = None
+        self.metrics_: Dict = {}
+
+    def cluster(
+        self,
+        similarity_matrix: np.ndarray,
+        client_ids: List[int],
+        verbose: bool = True,
+    ) -> Dict:
+        """
+        Cluster clients from their n×n cosine similarity matrix.
+
+        Parameters
+        ----------
+        similarity_matrix : (n_clients, n_clients) float array
+            S[i,j] = cosine similarity between clients i and j.  Diagonal = 1.
+        client_ids : list of n_clients ints
+            Client IDs in the same order as the rows/cols of similarity_matrix.
+        verbose : bool
+
+        Returns
+        -------
+        Dict with keys: n_clusters, labels (np.ndarray), metrics (dict)
+        """
+        from scipy.cluster.hierarchy import linkage, fcluster
+        from scipy.spatial.distance import squareform
+
+        n = len(client_ids)
+
+        # ── Distance matrix ───────────────────────────────────────────────────
+        D = np.clip(1.0 - similarity_matrix, 0.0, 2.0).astype(np.float64)
+        np.fill_diagonal(D, 0.0)
+
+        k = min(self.n_clusters, n - 1)   # can't have more clusters than n-1
+
+        if n <= 1:
+            self.labels_ = np.zeros(n, dtype=int)
+            self.metrics_ = {'silhouette_score': 0.0, 'davies_bouldin_index': 0.0,
+                             'combined_score': 0.0, 'temporal_consistency': 1.0}
+            return {'n_clusters': 1, 'labels': self.labels_, 'metrics': self.metrics_}
+
+        # ── Hierarchical clustering ───────────────────────────────────────────
+        method = self.linkage_method
+        if method == 'ward':
+            # Ward requires Euclidean input; fall back to complete for distance matrix
+            method = 'complete'
+            warnings.warn("Ward linkage requires Euclidean distances; using 'complete' instead.")
+
+        condensed = squareform(D, checks=False)
+        Z = linkage(condensed, method=method)
+        raw_labels = fcluster(Z, t=k, criterion='maxclust')   # 1-indexed
+        labels = (raw_labels - 1).astype(int)                 # 0-indexed
+
+        # ── Metrics (computed on distance matrix → no HDLSS issue) ───────────
+        sil = 0.0
+        db  = 0.0
+        if len(set(labels)) > 1:
+            try:
+                sil = float(silhouette_score(D, labels, metric='precomputed'))
+            except Exception:
+                sil = 0.0
+            try:
+                # Davies-Bouldin needs feature vectors; approximate via MDS embedding
+                from sklearn.manifold import MDS
+                mds = MDS(n_components=min(3, n - 1), dissimilarity='precomputed',
+                          random_state=42, normalized_stress='auto')
+                X_mds = mds.fit_transform(D)
+                db = float(davies_bouldin_score(X_mds, labels))
+            except Exception:
+                db = 0.0
+
+        # Cluster size stats
+        sizes = np.bincount(labels)
+        n_singletons = int(np.sum(sizes == 1))
+        sil_norm = (sil + 1) / 2
+        combined = sil_norm - 0.15 * n_singletons
+
+        self.labels_  = labels
+        self.metrics_ = {
+            'combined_score':       float(combined),
+            'silhouette_score':     sil,
+            'davies_bouldin_index': db,
+            'calinski_harabasz_score': 0.0,   # not meaningful for precomputed metric
+            'temporal_consistency': 1.0,
+            'inertia':              0.0,
+        }
+
+        if verbose:
+            avg_sim = float(np.mean(similarity_matrix[np.triu_indices(n, k=1)]))
+            print(f"\n[CFL] Hierarchical clustering ({method} linkage, k={k})")
+            print(f"  Silhouette (precomputed D): {sil:.4f}")
+            print(f"  Davies-Bouldin:             {db:.4f}")
+            print(f"  Avg cosine similarity:      {avg_sim:.4f}")
+            print(f"  Cluster sizes:              {list(sizes)}")
+            for ci in range(k):
+                members = [client_ids[i] for i in range(n) if labels[i] == ci]
+                print(f"  Cluster {ci}: clients {members}")
+
+        return {
+            'n_clusters': k,
+            'labels':     self.labels_,
+            'centroids':  None,   # hierarchical clustering has no centroids
+            'metrics':    self.metrics_,
+        }
 
 
 def visualize_clusters(fingerprints: np.ndarray, labels: np.ndarray, 

@@ -69,7 +69,7 @@ SEED=42
 MODEL_NORMALIZED="${MODEL//\//_}"  # Replace / with _ for file paths
 TASKS=(sst2 mrpc cola qnli)
 CLIENTS_PER_TASK=3
-ROUNDS=10  # 10 rounds in one shot
+ROUNDS=5  # 10 rounds
 
 # Create directories
 mkdir -p results
@@ -93,6 +93,7 @@ CMD=("$PYTHON_CMD" "experiments/atlas_integrated.py"
     --tasks "${TASKS[@]}"
     --clients-per-task "$CLIENTS_PER_TASK"
     --rounds "$ROUNDS"
+    --local-epochs 3
     --seed "$SEED")
 
 # Log file (includes timestamp)

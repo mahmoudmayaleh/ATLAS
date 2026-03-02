@@ -66,8 +66,9 @@ MODELS = {
         "batch_size": 16,
         "learning_rate": 3e-5,
         "local_epochs": 3,
-        "fingerprint_samples": 100,
-        "fingerprint_batches": 15,
+        "fingerprint_samples": 400,
+        "fingerprint_batches": 50,
+        "fingerprint_batch_size": 8,
         "max_samples": 3000,
         "lora_ranks": [4, 8, 16, 32]
     },
@@ -82,8 +83,9 @@ MODELS = {
         "batch_size": 16,
         "learning_rate": 3e-5,
         "local_epochs": 3,
-        "fingerprint_samples": 100,
-        "fingerprint_batches": 15,
+        "fingerprint_samples": 400,
+        "fingerprint_batches": 50,
+        "fingerprint_batch_size": 8,
         "max_samples": 3000,
         "lora_ranks": [4, 8, 16, 32]
     },

@@ -721,11 +721,13 @@ def compute_adjacency_weights(
     gradient_fingerprints: Optional[Dict[int, np.ndarray]] = None,
     gradient_similarities: Optional[np.ndarray] = None,
     client_performance: Optional[Dict[int, float]] = None,
-    method: Literal['uniform', 'similarity', 'adaptive', 'mira_rbf'] = 'mira_rbf',
+    method: Literal['uniform', 'similarity', 'adaptive', 'mira_rbf', 'mira_rbf_robust'] = 'mira_rbf_robust',
     adaptive_beta: float = 1.0,
     mira_alpha: float = 1.0,
     block_diagonal: bool = True,
-    ensure_connectivity: bool = True
+    ensure_connectivity: bool = True,
+    rbf_clip_percentile: float = 95.0,
+    rbf_floor: float = 0.05,
 ) -> Dict[Tuple[int, int], float]:
     """
     Compute adjacency weights a_kℓ for Laplacian regularization.
@@ -758,18 +760,25 @@ def compute_adjacency_weights(
     """
     weights = {}
     
-    # Pre-compute pairwise distances for MIRA RBF method
-    if method == 'mira_rbf' and gradient_fingerprints is not None:
-        # Convert fingerprints to array for efficient distance computation
+    # Pre-compute pairwise distances for MIRA RBF methods
+    if method in ('mira_rbf', 'mira_rbf_robust') and gradient_fingerprints is not None:
         client_ids_sorted = sorted(gradient_fingerprints.keys())
         fingerprint_array = np.vstack([gradient_fingerprints[cid] for cid in client_ids_sorted])
-        
-        # Compute pairwise L2 distances: ||f_k - f_ℓ||²
         from scipy.spatial.distance import cdist
         pairwise_distances_sq = cdist(fingerprint_array, fingerprint_array, metric='sqeuclidean')
-        
-        # Build client_id -> index mapping
         client_to_idx = {cid: idx for idx, cid in enumerate(client_ids_sorted)}
+
+        # Robust variant: clip outlier distances at percentile, then log1p-stabilise.
+        # This prevents one high-distance client from producing near-zero RBF weights
+        # (the CoLA client-7 outlier problem: d²=11.7 vs d²=1.0 for others).
+        if method == 'mira_rbf_robust':
+            clip_val = float(np.percentile(pairwise_distances_sq[pairwise_distances_sq > 0],
+                                           rbf_clip_percentile))
+            pairwise_distances_sq_robust = np.log1p(
+                np.clip(pairwise_distances_sq, 0.0, clip_val)
+            )
+        else:
+            pairwise_distances_sq_robust = pairwise_distances_sq
     
     # Build client -> task mapping for ensuring intra-task connectivity
     client_to_task = {}
@@ -864,7 +873,21 @@ def compute_adjacency_weights(
                     else:
                         logger.warning("mira_rbf method requires gradient_fingerprints, falling back to uniform")
                         weight = 1.0
-                
+
+                elif method == 'mira_rbf_robust':
+                    # Outlier-robust RBF: clip at percentile + log1p to prevent
+                    # asymmetric weights when one client's fingerprint is far outlier.
+                    # floor: minimum weight for intra-cluster pairs so no client
+                    # becomes isolated due to scale differences (FedIR/DP-Fed-LS style).
+                    if gradient_fingerprints is not None:
+                        idx_i = client_to_idx[client_i]
+                        idx_j = client_to_idx[client_j]
+                        d = pairwise_distances_sq_robust[idx_i, idx_j]
+                        weight = max(float(np.exp(-mira_alpha * d)), rbf_floor)
+                    else:
+                        logger.warning("mira_rbf_robust requires gradient_fingerprints, falling back to uniform")
+                        weight = 1.0
+
                 elif method == 'similarity':
                     # Weight by gradient similarity (Phase 1, legacy)
                     if gradient_similarities is not None:
