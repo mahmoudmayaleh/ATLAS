@@ -53,7 +53,7 @@ if [ -n "${VENV_PATH:-}" ]; then
 fi
 
 # Validate arguments (simple check)
-VALID_MODELS=("distilbert-base-uncased" "gpt2" "gpt2-xl" "Qwen/Qwen2.5-0.5B")
+VALID_MODELS=("distilbert-base-uncased" "gpt2" "gpt2-xl" "Qwen/Qwen2.5-0.5B" "Qwen/Qwen2.5-1.5B")
 if [[ ! " ${VALID_MODELS[@]} " =~ " ${MODEL} " ]]; then
     echo "Warning: Model '${MODEL}' not in the quick-validated list. Proceeding anyway."
 fi
@@ -67,7 +67,7 @@ fi
 # Configuration
 SEED=123
 MODEL_NORMALIZED="${MODEL//\//_}"  # Replace / with _ for file paths
-TASKS=(sst2 mrpc cola qnli)
+TASKS=(sst2 mrpc qnli)
 CLIENTS_PER_TASK=3
 ROUNDS=10  # 10 rounds in one shot
 
@@ -93,6 +93,7 @@ CMD=("$PYTHON_CMD" "experiments/atlas_integrated.py"
     --tasks "${TASKS[@]}"
     --clients-per-task "$CLIENTS_PER_TASK"
     --rounds "$ROUNDS"
+    --local-epochs 2
     --seed "$SEED")
 
 # Log file (includes timestamp)

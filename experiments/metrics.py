@@ -3,16 +3,275 @@ Metrics Collection and Analysis for ATLAS Experiments
 
 Provides tools for tracking, logging, and analyzing performance metrics
 during federated learning experiments.
+
+Includes:
+- Classification metrics (accuracy, F1, Matthews)
+- NLG metrics (BLEU, NIST, METEOR, ROUGE-L) for SplitLoRA/HSplitLoRA comparison
+- Perplexity tracking for causal LM tasks
+- Convergence & efficiency helpers (trainable params, memory, wall-clock)
 """
 
 import torch
+import torch.nn.functional as F
 import psutil
 import time
 import json
-from typing import Dict, List, Any, Optional
+from typing import Dict, List, Any, Optional, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 import numpy as np
+
+
+# ========== PERPLEXITY ==========
+
+def compute_perplexity_from_loss(avg_loss: float) -> float:
+    """Convert average cross-entropy loss to perplexity: PPL = exp(loss).
+    
+    Works for both classification and causal-LM tasks.
+    Clamps loss to [0, 100] to avoid overflow.
+    """
+    return float(np.exp(min(avg_loss, 100.0)))
+
+
+def compute_perplexity(model, dataloader, device: str = "cuda") -> float:
+    """Compute perplexity of a causal LM on a dataloader.
+    
+    Args:
+        model: HuggingFace causal LM (or any model with .logits output)
+        dataloader: DataLoader yielding batches with 'input_ids' and 'labels'
+        device: torch device string
+    
+    Returns:
+        Perplexity (float). Lower = better.
+    """
+    model.eval()
+    total_loss = 0.0
+    total_tokens = 0
+
+    with torch.no_grad():
+        for batch in dataloader:
+            input_ids = batch['input_ids'].to(device)
+            labels = batch.get('labels', input_ids).to(device)
+            attention_mask = batch.get('attention_mask', None)
+            if attention_mask is not None:
+                attention_mask = attention_mask.to(device)
+
+            outputs = model(input_ids=input_ids, attention_mask=attention_mask)
+            logits = outputs.logits
+
+            # Shift for causal LM: predict next token
+            shift_logits = logits[..., :-1, :].contiguous()
+            shift_labels = labels[..., 1:].contiguous()
+
+            loss = F.cross_entropy(
+                shift_logits.view(-1, shift_logits.size(-1)),
+                shift_labels.view(-1),
+                ignore_index=-100,
+                reduction='sum'
+            )
+            # Count non-padding tokens
+            valid_tokens = (shift_labels != -100).sum().item()
+            total_loss += loss.item()
+            total_tokens += valid_tokens
+
+    avg_loss = total_loss / max(total_tokens, 1)
+    return float(np.exp(min(avg_loss, 100.0)))
+
+
+# ========== NLG METRICS (SplitLoRA / HSplitLoRA comparison) ==========
+
+def _ensure_nltk_data():
+    """Download required NLTK corpora once (no-op if already present)."""
+    import nltk
+    for pkg in ('wordnet', 'punkt', 'punkt_tab', 'omw-1.4'):
+        try:
+            nltk.download(pkg, quiet=True)
+        except Exception:
+            pass
+
+
+def compute_nlg_metrics(predictions: List[str], references: List[str]) -> Dict[str, float]:
+    """Compute NLG evaluation metrics matching SplitLoRA/HSplitLoRA Table I/II.
+
+    Metrics: BLEU, NIST, METEOR, ROUGE-L.
+    Library mapping (sacrebleu 2.x dropped corpus_nist / corpus_meteor):
+      BLEU   → sacrebleu.corpus_bleu
+      NIST   → nltk.translate.nist_score.corpus_nist
+      METEOR → nltk.translate.meteor_score.meteor_score  (averaged, ×100)
+      ROUGE-L→ rouge_score.rouge_scorer
+
+    Args:
+        predictions: List of generated text strings
+        references:  List of reference text strings (one per prediction)
+
+    Returns:
+        Dict with keys: BLEU, NIST, METEOR, ROUGE-L  (all 0–100 scale)
+    """
+    _ensure_nltk_data()
+    results: Dict[str, float] = {}
+
+    # ── BLEU via sacrebleu ────────────────────────────────────────────────────
+    try:
+        import sacrebleu
+        bleu = sacrebleu.corpus_bleu(predictions, [references])
+        results['BLEU'] = float(bleu.score)
+    except Exception:
+        results['BLEU'] = 0.0
+
+    # ── NIST via nltk ─────────────────────────────────────────────────────────
+    # nltk.corpus_nist expects: list-of-list-of-refs, list-of-hyps (tokenised)
+    try:
+        from nltk.translate.nist_score import corpus_nist as nltk_nist
+        hyps = [p.split() for p in predictions]
+        refs_tok = [[r.split()] for r in references]   # one ref per hypothesis
+        results['NIST'] = float(nltk_nist(refs_tok, hyps, n=5))
+    except Exception:
+        results['NIST'] = 0.0
+
+    # ── METEOR via nltk ──────────────────────────────────────────────────────
+    # meteor_score takes tokenised lists; average over corpus, then ×100
+    try:
+        from nltk.translate.meteor_score import meteor_score as nltk_meteor
+        scores = [
+            nltk_meteor([ref.split()], pred.split())
+            for pred, ref in zip(predictions, references)
+        ]
+        results['METEOR'] = float(np.mean(scores)) * 100.0
+    except Exception:
+        results['METEOR'] = 0.0
+
+    # ── ROUGE-L via rouge_score ───────────────────────────────────────────────
+    try:
+        from rouge_score import rouge_scorer as rs_module
+        scorer = rs_module.RougeScorer(['rougeL'], use_stemmer=True)
+        rouge_scores = [
+            scorer.score(ref, pred)['rougeL'].fmeasure
+            for pred, ref in zip(predictions, references)
+        ]
+        results['ROUGE-L'] = float(np.mean(rouge_scores)) * 100.0
+    except Exception:
+        results['ROUGE-L'] = 0.0
+
+    return results
+
+
+# ========== CONVERGENCE TRACKING ==========
+
+def find_convergence_round(
+    values: List[float],
+    target: Optional[float] = None,
+    threshold_frac: float = 0.95,
+    mode: str = 'max',
+) -> Optional[int]:
+    """Find the round where a metric converges.
+    
+    Args:
+        values: Per-round metric values (accuracy, PPL, loss, etc.)
+        target: Absolute target value. If None, uses threshold_frac of best.
+        threshold_frac: Fraction of best value to consider converged (for mode='max').
+            For mode='min', convergence = value <= target or best / threshold_frac.
+        mode: 'max' (accuracy-like) or 'min' (loss/PPL-like)
+    
+    Returns:
+        1-based round number, or None if never converged.
+    """
+    if not values:
+        return None
+
+    if target is None:
+        if mode == 'max':
+            best = max(values)
+            target = best * threshold_frac
+        else:
+            best = min(values)
+            target = best / threshold_frac  # e.g. converged when PPL <= best*1.05
+
+    for i, v in enumerate(values):
+        if mode == 'max' and v >= target:
+            return i + 1
+        elif mode == 'min' and v <= target:
+            return i + 1
+
+    return None
+
+
+# ========== EFFICIENCY HELPERS ==========
+
+def count_trainable_params(model) -> Dict[str, int]:
+    """Count trainable vs total parameters, split by LoRA / non-LoRA.
+    
+    Returns:
+        Dict with keys: total, trainable, frozen, lora_trainable, non_lora_trainable
+    """
+    total = 0
+    trainable = 0
+    lora_trainable = 0
+
+    for name, param in model.named_parameters():
+        total += param.numel()
+        if param.requires_grad:
+            trainable += param.numel()
+            if any(kw in name.lower() for kw in ['lora_a', 'lora_b', 'lora']):
+                lora_trainable += param.numel()
+
+    return {
+        'total': total,
+        'trainable': trainable,
+        'frozen': total - trainable,
+        'lora_trainable': lora_trainable,
+        'non_lora_trainable': trainable - lora_trainable,
+    }
+
+
+def capture_memory_stats(device: str = "cuda") -> Dict[str, float]:
+    """Capture GPU/CPU memory statistics in MB.
+    
+    Returns:
+        Dict with allocated_mb, peak_mb, reserved_mb (GPU) or rss_mb (CPU)
+    """
+    if device == "cuda" and torch.cuda.is_available():
+        return {
+            'allocated_mb': torch.cuda.memory_allocated() / (1024**2),
+            'peak_mb': torch.cuda.max_memory_allocated() / (1024**2),
+            'reserved_mb': torch.cuda.memory_reserved() / (1024**2),
+            'device': 'cuda',
+        }
+    else:
+        process = psutil.Process()
+        mem = process.memory_info()
+        return {
+            'rss_mb': mem.rss / (1024**2),
+            'peak_mb': mem.rss / (1024**2),
+            'device': 'cpu',
+        }
+
+
+def compute_comm_cost_mb(state_dict: Dict[str, torch.Tensor],
+                         quantized: bool = True) -> Dict[str, float]:
+    """Compute communication cost of a state dict in MB.
+    
+    Args:
+        state_dict: Model state dict (or subset — e.g. LoRA params only)
+        quantized: If True, assume INT8 quantization (1 byte/param)
+    
+    Returns:
+        Dict with total_mb, num_params, bytes_per_param
+    """
+    total_bytes = 0
+    num_params = 0
+    for name, param in state_dict.items():
+        n = param.numel()
+        num_params += n
+        if quantized:
+            total_bytes += n  # 1 byte per param (INT8)
+        else:
+            total_bytes += n * param.element_size()
+
+    return {
+        'total_mb': total_bytes / (1024**2),
+        'num_params': num_params,
+        'bytes_per_param': 1 if quantized else 4,
+    }
 
 
 @dataclass

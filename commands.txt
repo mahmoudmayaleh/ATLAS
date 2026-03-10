@@ -1,7 +1,0 @@
-ssh mayale_m@163.173.228.93
-
-nvidia-smi
-
-source ~/atlas_env/bin/activate
-
-conda activate atlas_py310

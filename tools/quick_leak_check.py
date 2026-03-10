@@ -11,7 +11,7 @@ from datasets import load_dataset, load_from_disk
 dataset_map = {
     'sst2': ('stanfordnlp/sst2', 'sentence', None),
     'mrpc': ('nyu-mll/glue', 'sentence1', 'sentence2'),
-    'cola': ('nyu-mll/glue', 'sentence', None),
+    'qnli': ('nyu-mll/glue', 'question', 'sentence'),
 }
 
 def text_hash(example, text_col, text_col2=None):

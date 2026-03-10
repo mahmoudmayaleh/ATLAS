@@ -53,7 +53,8 @@ python experiments\run_experiments.py --mode single --name sst2_atlas
 
 ### Datasets
 
-- **GLUE Tasks**: SST-2, MRPC, CoLA, QNLI
+- **GLUE Tasks**: SST-2, MRPC, QNLI
+- **NLG Task**: E2E NLG (for SplitLoRA / HSplitLoRA comparison — see `run_e2e_nlg.py`)
 - **Multi-task**: Combined GLUE tasks for task clustering validation
 
 ### Models

@@ -89,7 +89,7 @@ def main():
     tasks = [
         ('sst2', 'stanfordnlp/sst2', 'sentence', None),
         ('mrpc', 'nyu-mll/glue', 'sentence1', 'sentence2'),
-        ('cola', 'nyu-mll/glue', 'sentence', None),
+        ('qnli', 'nyu-mll/glue', 'question', 'sentence'),
     ]
     
     results = {}

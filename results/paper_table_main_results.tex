@@ -1,0 +1,21 @@
+\begin{table*}[t]
+\centering
+\caption{Main results across backbones. Values are mean $\pm$ std over three seeds where available. GPT-2 ablation baselines were run once and are reported without uncertainty.}
+\label{tab:main_results_all_models}
+\begin{tabular}{llcccccc}
+\toprule
+\textbf{Backbone} & \textbf{Method} & \textbf{Macro Avg.} & \textbf{SST-2} & \textbf{MRPC (F1)} & \textbf{QNLI} & \textbf{Weak Devs Dropped} & \textbf{LoRA Comm. (MB)} \\
+\midrule
+DistilBERT & Standard FedAvg & 0.6214 $\pm$ 0.0125 & 0.6705 & 0.4423 & 0.6514 & 2 & 889.3 \\
+ & ATLAS & 0.7832 $\pm$ 0.0078 & 0.8654 & 0.7298 & 0.7544 & 0 & 611.4 \\
+\midrule
+GPT-2 & Standard FedAvg & 0.5605 $\pm$ 0.0071 & 0.6858 & 0.4623 & 0.5335 & 2 & 827.4 \\
+ & FedAvg-Cluster & 0.6962 $\pm$ 0.0016 & 0.6358 & 0.6046 & 0.6958 & 2 & 685.8 \\
+ & ATLAS w/o Laplacian & 0.7881 $\pm$ 0.0002 & 0.8237 & 0.6548 & 0.7456 & 0 & 587.5 \\
+ & ATLAS & 0.8088 $\pm$ 0.0158 & 0.8970 & 0.7451 & 0.8156 & 0 & 554.7 \\
+\midrule
+Qwen-2.5-0.5B & Standard FedAvg & 0.7882 $\pm$ 0.0247 & 0.8295 & 0.7234 & 0.8223 & 2 & 4,070.9 \\
+ & ATLAS & 0.8568 $\pm$ 0.0054 & 0.9033 & 0.8023 & 0.8754 & 0 & 1,154.0 \\
+\bottomrule
+\end{tabular}
+\end{table*}

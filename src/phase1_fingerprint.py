@@ -432,7 +432,16 @@ class FingerprintExtractor:
                     g_cpu = param.grad.detach().cpu()
 
                     # ── Layer key ────────────────────────────────────────────
-                    lm = re.search(r'layer[._](\d+)', name)
+                    # Cover all common transformer naming schemes:
+                    #   DistilBERT:  ...transformer.layer.N...
+                    #   BERT:        ...encoder.layer.N...
+                    #   GPT-2:       ...transformer.h.N...
+                    #   Qwen/LLaMA:  ...model.layers.N...
+                    lm = (
+                        re.search(r'(?:^|[._])layer[._](\d+)', name)
+                        or re.search(r'(?:^|[._])h[._](\d+)', name)
+                        or re.search(r'(?:^|[._])layers[._](\d+)', name)
+                    )
                     if lm:
                         layer_key = f'layer_{int(lm.group(1))}'
                     elif any(k in name for k in ('classifier', 'pooler', 'pre_classifier')):

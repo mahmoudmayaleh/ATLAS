@@ -26,13 +26,6 @@ GLUE_TASKS = {
         "max_length": 128,
         "n_clients": 8
     },
-    "cola": {
-        "name": "cola",  # Linguistic acceptability
-        "num_classes": 2,
-        "metric": "matthews_correlation",
-        "max_length": 128,
-        "n_clients": 8
-    },
     "qnli": {
         "name": "qnli",  # Question NLI
         "num_classes": 2,
@@ -48,6 +41,21 @@ SUMMARIZATION_TASKS = {
         "metric": "rouge",
         "max_length": 512,
         "n_clients": 8
+    }
+}
+
+# E2E NLG dataset — primary comparison target for SplitLoRA / HSplitLoRA papers
+# Use with GPT-2 / GPT-2-medium as causal LM (see experiments/run_e2e_nlg.py)
+NLG_TASKS = {
+    "e2e": {
+        "name": "e2e",
+        "hf_path": "tuetschek/e2e_nlg",     # HuggingFace dataset path (parquet, no legacy script)
+        "input_column": "meaning_representation",
+        "target_column": "human_reference",
+        "metrics": ["BLEU", "NIST", "METEOR", "ROUGE-L", "PPL"],
+        "max_input_length": 128,
+        "max_target_length": 128,
+        "n_clients": 5,                     # SplitLoRA uses N=3-5
     }
 }
 
@@ -138,6 +146,24 @@ MODELS = {
         "full_params": 110_000_000,
         "full_size_mb": 440,
         "local_epochs": 3
+    },
+    "Qwen/Qwen2.5-1.5B": {
+        "name": "Qwen/Qwen2.5-1.5B",
+        "type": "causal_lm",
+        "hidden_size": 1536,
+        "num_layers": 28,
+        "full_params": 1_543_714_816,
+        "full_size_mb": 5900,
+        # Experiment-specific hyperparameters
+        # batch=8 fits on 16GB GPU (model~5.9GB + activations~200MB)
+        "batch_size": 8,
+        "learning_rate": 2e-5,
+        "local_epochs": 1,
+        "fingerprint_samples": 50,
+        "fingerprint_batches": 15,
+        "fingerprint_batch_size": 4,
+        "max_samples": 3000,
+        "lora_ranks": [4, 8, 12, 16]
     }
 }
 
@@ -333,7 +359,7 @@ FULL_EXPERIMENTS = [
         training=TrainingConfig()
     ),
     
-    # Multi-task experiments (MRPC, CoLA, QNLI)
+    # Multi-task experiments (MRPC, QNLI)
     ExperimentConfig(
         name="multitask_atlas",
         dataset="multitask",  # Special handling for multiple GLUE tasks
@@ -352,10 +378,16 @@ METRICS = {
     "f1": "F1 score",
     "matthews_correlation": "Matthews correlation coefficient",
     "rouge": "ROUGE score for summarization",
+    "BLEU": "Corpus BLEU (sacrebleu) — SplitLoRA Table I",
+    "NIST": "Corpus NIST — SplitLoRA Table I",
+    "METEOR": "Corpus METEOR — SplitLoRA Table I",
+    "ROUGE-L": "ROUGE-L F-measure — MIRA / HSplitLoRA",
+    "PPL": "Perplexity = exp(avg cross-entropy loss)",
     "memory_mb": "Peak memory usage (MB)",
     "comm_mb_per_round": "Communication cost per round (MB)",
     "training_time_sec": "Training time (seconds)",
     "convergence_rounds": "Rounds to convergence",
+    "trainable_params": "Number of trainable parameters (LoRA + head)",
     "privacy_dcs": "Data Characteristic Score (privacy metric)"
 }
 
@@ -368,6 +400,8 @@ def get_dataset_config(dataset_name: str) -> Dict[str, Any]:
         return GLUE_TASKS[dataset_name]
     elif dataset_name in SUMMARIZATION_TASKS:
         return SUMMARIZATION_TASKS[dataset_name]
+    elif dataset_name in NLG_TASKS:
+        return NLG_TASKS[dataset_name]
     else:
         raise ValueError(f"Unknown dataset: {dataset_name}")
 
@@ -383,6 +417,8 @@ def get_model_config(model_name: str) -> Dict[str, Any]:
         "gpt2xl": "gpt2-xl",
         "Qwen/Qwen2.5-0.5B": "Qwen/Qwen2.5-0.5B",
         "qwen-0.5b": "Qwen/Qwen2.5-0.5B",
+        "Qwen/Qwen2.5-1.5B": "Qwen/Qwen2.5-1.5B",
+        "qwen-1.5b": "Qwen/Qwen2.5-1.5B",
         "bert-base-uncased": "bert-base",
         "bert-base": "bert-base"
     }
@@ -413,6 +449,7 @@ def get_model_hyperparameters(model_name: str) -> Dict[str, Any]:
         'max_samples': config.get('max_samples', 3000),
         'lora_ranks': config.get('lora_ranks', [4, 8, 16, 32]),
         'hidden_size': config['hidden_size'],
+        'num_layers': config['num_layers'],
         'num_layers': config['num_layers']
     }
 

@@ -98,7 +98,7 @@ def create_plots(results, output_dir="results"):
     
     # Per-task
     plt.figure(figsize=(12, 6))
-    tasks = ['sst2', 'mrpc', 'cola']
+    tasks = ['sst2', 'mrpc', 'e2e']
     colors = ['blue', 'green', 'red']
     for task, color in zip(tasks, colors):
         task_accs = [r['task_metrics'].get(task, 0) for r in results['rounds']]

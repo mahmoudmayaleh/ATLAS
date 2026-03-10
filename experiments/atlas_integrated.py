@@ -24,11 +24,17 @@ os.environ.setdefault('TF_CPP_MIN_LOG_LEVEL', '3')
 os.environ.setdefault('XLA_PYTHON_CLIENT_PREALLOCATE', 'false')
 os.environ.setdefault('TRANSFORMERS_NO_ADVISORY_WARNINGS', '1')
 os.environ.setdefault('HF_HUB_DISABLE_TELEMETRY', '1')
+# Prevent tokenizer/model-loading thread pools from exhausting OS thread limits
+# (RuntimeError: can't start new thread) when loading many models sequentially.
+os.environ.setdefault('TOKENIZERS_PARALLELISM', 'false')
+os.environ.setdefault('OMP_NUM_THREADS', '4')
+os.environ.setdefault('MKL_NUM_THREADS', '4')
 
 # Ensure the repository root is on sys.path so `src.*` imports resolve
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 
+import gc
 import logging
 import warnings
 
@@ -73,8 +79,13 @@ import io
 from src.phase1_clustering import GradientExtractor, TaskClusterer, CFLClusterer
 from src.phase1_fingerprint import FingerprintExtractor, build_cosine_fingerprints
 from src.phase2_configuration import DeviceProfiler, RankAllocator
-from src.phase3_split_fl import SplitClient, SplitServer
+from src.phase3_split_fl import SplitClient, SplitServer, ImprovedSplitSelector
 from src.phase4_laplacian import LaplacianAggregation, TaskGraph
+from src.quant_comm import (
+    quantize_lora_state, dequantize_lora_state,
+    lora_state_int8_bytes, lora_state_fp32_bytes,
+    int8_bytes, is_lora_param,
+)
 
 
 @dataclass
@@ -82,7 +93,7 @@ class ATLASConfig:
     """Configuration for ATLAS integrated experiment"""
     # Model & tasks
     model_name: str = "distilbert-base-uncased"
-    tasks: List[str] = field(default_factory=lambda: ['sst2', 'mrpc', 'cola'])  # e.g., ['sst2', 'mrpc', 'cola']
+    tasks: List[str] = field(default_factory=lambda: ['sst2', 'mrpc', 'qnli'])  # e.g., ['sst2', 'mrpc', 'qnli']
     clients_per_task: int = 3  # 3 clients per task → 9 clients total for 3 tasks
     
     # Training
@@ -115,17 +126,22 @@ class ATLASConfig:
     # Phase 3: Split learning
     split_layer: int = 3  # Split at layer 3 (bottom half)
     
+    # LR schedule: cosine decay across rounds to prevent overfitting
+    # round_lr = lr_min + (lr - lr_min) * 0.5 * (1 + cos(π * round_idx / num_rounds))
+    lr_cosine_decay: bool = True   # enable per-round cosine LR annealing
+    lr_min_fraction: float = 0.1   # lr_min = lr * lr_min_fraction
+
     # Phase 4: Laplacian regularization (MIRA)
-    eta: float = 0.1  # Regularization strength λ (tune: {0.0, 0.01, 0.1, 0.5, 1.0})
+    eta: float = 0.01  # Regularization strength λ (tune: {0.0, 0.01, 0.1, 0.5, 1.0})
     laplacian_warmup_rounds: int = 1  # skip Laplacian for first N rounds (LoRA weights too noisy)
     laplacian_adjacency_method: Literal['uniform', 'similarity', 'adaptive', 'mira_rbf', 'mira_rbf_robust'] = 'mira_rbf_robust'  # 'mira_rbf_robust' (RECOMMENDED: clip+log1p outlier-robust)
     mira_alpha: float = 1.0  # RBF kernel bandwidth for a_kℓ = exp(-α||f_k - f_ℓ||²)
     k_neighbors: int = 3
-    block_diagonal: bool = True  # Zero cross-cluster edges for block structure
     ensure_connectivity: bool = True  # Ensure singletons have intra-task neighbors
     
     # Ablation & tuning modes
     mode: str = 'atlas'  # 'local_only', 'fedavg_cluster', 'atlas'
+    quant_lora_comm: bool = True  # Transmit LoRA adapter updates as INT8 (~4× bandwidth reduction)
     lambda_sweep: bool = False  # If True, sweep eta over [0.0, 0.01, 0.1, 0.5, 1.0]
     lambda_values: List[float] = field(default_factory=lambda: [0.0, 0.01, 0.1, 0.5, 1.0])  # For lambda sweep
     
@@ -137,7 +153,7 @@ class ATLASConfig:
     def __post_init__(self):
         # Backward-compatible safety: allow callers to pass None explicitly
         if self.tasks is None:
-            self.tasks = ['sst2', 'mrpc', 'cola']
+            self.tasks = ['sst2', 'mrpc', 'qnli']
         if self.device_types is None:
             self.device_types = ['cpu_2gb'] * 2 + ['tablet_4gb'] * 3 + ['laptop_8gb'] * 2 + ['gpu_16gb'] * 2
         if self.rank_candidates is None:
@@ -176,7 +192,7 @@ class SplitServerWrapper(nn.Module):
         self.n_total_layers = n_total_layers
         self.arch = self._detect_arch(model)
         self._extract_top_components(model)
-        # Fix 31: class-balanced loss weights for imbalanced tasks (e.g. CoLA 69/31).
+        # Fix 31: class-balanced loss weights for imbalanced tasks (e.g. MRPC 68/32).
         # Stored as a non-parameter buffer so it moves with .to(device) calls.
         if class_weights is not None:
             self.register_buffer('class_weights', class_weights.float())
@@ -215,6 +231,13 @@ class SplitServerWrapper(nn.Module):
             self.norm = model.model.norm
             self.score = model.score
             self.clf_dropout = nn.Dropout(0.1)
+            # Qwen2.5 / LLaMA: rotary embeddings are pre-computed at model level
+            # and passed as position_embeddings=(cos, sin) to each decoder layer.
+            # Store the module so server-side forward can replicate this.
+            if hasattr(model.model, 'rotary_emb'):
+                self.rotary_emb = model.model.rotary_emb
+            else:
+                self.rotary_emb = None
 
     def forward(
         self,
@@ -266,8 +289,27 @@ class SplitServerWrapper(nn.Module):
             logits = self.score(pooled)
 
         elif self.arch == 'llama_qwen':
+            # Qwen2/LLaMA decoder layers require position_ids for RoPE.
+            seq_len = x.size(1)
+            position_ids = torch.arange(seq_len, dtype=torch.long, device=x.device).unsqueeze(0)
+            # Qwen2.5 / LLaMA: rotary embeddings are pre-computed at model level
+            # and supplied as position_embeddings=(cos, sin) to each decoder layer.
+            # Without this, the internal cos/sin unpack raises NoneType error.
+            position_embeddings = None
+            if self.rotary_emb is not None:
+                position_embeddings = self.rotary_emb(x, position_ids)
+            # Build 4D causal+padding mask that decoder layers expect.
+            if attention_mask is not None:
+                bsz = x.size(0)
+                causal = torch.full((seq_len, seq_len), float('-inf'), device=x.device, dtype=x.dtype)
+                causal = torch.triu(causal, diagonal=1).unsqueeze(0).unsqueeze(0).expand(bsz, 1, seq_len, seq_len)
+                pad_mask = (1.0 - attention_mask.float()).to(x.dtype) * -1e9
+                causal_mask = causal + pad_mask[:, None, None, :]
+            else:
+                causal_mask = None
             for layer in self.top_layers:
-                out = layer(x)
+                out = layer(x, attention_mask=causal_mask, position_ids=position_ids,
+                            position_embeddings=position_embeddings)
                 x = out[0] if isinstance(out, tuple) else out
             x = self.norm(x)
             if attention_mask is not None:
@@ -282,7 +324,7 @@ class SplitServerWrapper(nn.Module):
         loss = None
         if labels is not None:
             # Fix 31: use class-balanced weights if supplied (handles imbalanced tasks
-            # like CoLA where 69% of samples are class 1 → trivial all-one prediction).
+            # like MRPC where classes are imbalanced → trivial majority prediction).
             w = self.class_weights.to(logits.device) if self.class_weights is not None else None
             loss = torch.nn.functional.cross_entropy(logits, labels, weight=w)  # type: ignore[possibly-unbound]
 
@@ -383,10 +425,22 @@ class ATLASIntegratedTrainer:
         from config import get_model_hyperparameters
         try:
             model_hparams = get_model_hyperparameters(config.model_name)
-            model_hidden_size = model_hparams['hidden_size']
-        except:
+            self.model_hidden_size = model_hparams['hidden_size']
+            self.model_num_layers  = model_hparams.get('num_layers', 6)
+            self.model_full_size_mb = model_hparams.get('full_size_mb', 268)
+        except Exception:
             # Fallback to default
-            model_hidden_size = 768
+            self.model_hidden_size  = 768
+            self.model_num_layers   = 6
+            self.model_full_size_mb = 268
+
+        # Auto-adjust split_layer to ~50% of model depth when using default of 3
+        # (default=3 is calibrated for DistilBERT-6; deeper models need a larger split)
+        if config.split_layer == 3 and self.model_num_layers > 6:
+            config.split_layer = self.model_num_layers // 2
+            print(f"[ATLAS] Global fallback split_layer={config.split_layer} "
+                  f"({self.model_num_layers}-layer model) — "
+                  f"overridden per-client by _compute_device_split() in Phase 2")
         
         # Initialize ATLAS components
         self.gradient_extractor = GradientExtractor(
@@ -404,7 +458,7 @@ class ATLASIntegratedTrainer:
         self.cfl_clusterer = CFLClusterer(n_clusters=n_tasks, linkage_method='complete')
         self.device_profiler = DeviceProfiler()
         self.rank_allocator = RankAllocator(
-            model_dim=model_hidden_size,  # Use model-specific hidden size
+            model_dim=self.model_hidden_size,  # Use model-specific hidden size
             bytes_per_param=4  # fp32
         )
         
@@ -432,8 +486,10 @@ class ATLASIntegratedTrainer:
         self.dataset_map = {
             'sst2': ('stanfordnlp/sst2', 'sentence', None, 2),
             'mrpc': ('nyu-mll/glue', 'sentence1', 'sentence2', 2),
-            'cola': ('nyu-mll/glue', 'sentence', None, 2),
             'qnli': ('nyu-mll/glue', 'question', 'sentence', 2),
+            # E2E NLG for SplitLoRA/HSplitLoRA comparison (classification proxy:
+            # binary sentiment derived from rating; for full NLG eval use run_e2e_nlg.py)
+            'e2e':  ('tuetschek/e2e_nlg', 'meaning_representation', None, 2),
         }
         
         # Setup clients and data
@@ -476,7 +532,7 @@ class ATLASIntegratedTrainer:
             rng = np.random.RandomState(int(self.config.seed) + int(task_idx))
 
             # Prefer stratified partitioning by label to reduce client-to-client variance,
-            # especially on imbalanced tasks (e.g., MRPC/CoLA). Fallback to a global
+            # especially on imbalanced tasks (e.g., MRPC). Fallback to a global
             # shuffle if labels cannot be read for any reason.
             label_to_indices: Dict[int, List[int]] = {}
             try:
@@ -547,6 +603,24 @@ class ATLASIntegratedTrainer:
             if task_name == 'sst2':
                 dataset = load_dataset(dataset_name, split='train')
                 test_dataset = load_dataset(dataset_name, split='validation')
+            elif task_name == 'e2e':
+                # Both tuetschek/e2e_nlg and GEM/e2e_nlg have a legacy e2e_nlg.py
+                # dataset script that datasets >=2.20 refuses to run.  Load from
+                # the raw CSVs on GitHub instead (same data, no script involved).
+                # trainset/devset have lowercase 'mr'/'ref' columns; rename inline.
+                _base = "https://github.com/tuetschek/e2e-dataset/raw/master/"
+                def _load_e2e_csv(url, split_name):
+                    ds = load_dataset('csv', data_files={split_name: url}, split=split_name)
+                    col_map = {c.lower(): c for c in ds.column_names}
+                    orig_mr  = col_map.get('mr')
+                    orig_ref = col_map.get('ref')
+                    if orig_mr and orig_mr != 'meaning_representation':
+                        ds = ds.rename_column(orig_mr, 'meaning_representation')
+                    if orig_ref and orig_ref != 'human_reference':
+                        ds = ds.rename_column(orig_ref, 'human_reference')
+                    return ds
+                dataset      = _load_e2e_csv(_base + 'trainset.csv', 'train')
+                test_dataset = _load_e2e_csv(_base + 'devset.csv',   'validation')
             else:
                 dataset = load_dataset(dataset_name, task_name, split='train')
                 test_dataset = load_dataset(dataset_name, task_name, split='validation')
@@ -610,6 +684,15 @@ class ATLASIntegratedTrainer:
         # Tokenize
         # Task-specific max length (QNLI benefits from longer context)
         max_length = 256 if task_name == 'qnli' else 128
+
+        # E2E NLG: purely generative dataset — no label column.
+        # Add a dummy label (0) so the classification pipeline
+        # (DataLoader, loss, evaluation) can run without crashing.
+        # Real NLG evaluation (BLEU/NIST/METEOR/ROUGE-L) is handled
+        # separately by run_e2e_nlg.py; accuracy numbers here are not meaningful.
+        if task_name == 'e2e':
+            dataset     = dataset.map(lambda _: {'label': 0}, batched=False, load_from_cache_file=False)
+            test_dataset = test_dataset.map(lambda _: {'label': 0}, batched=False, load_from_cache_file=False)
 
         def tokenize_fn(examples):
             if text_col2:
@@ -785,6 +868,7 @@ class ATLASIntegratedTrainer:
             # per_batch_grads: compressed norm snapshots — diagnostics only.
 
             del model
+            gc.collect()
             torch.cuda.empty_cache() if torch.cuda.is_available() else None
 
             n_layers = len([k for k in layer_imp if k.startswith('layer_')])
@@ -888,242 +972,7 @@ class ATLASIntegratedTrainer:
         # Normalized versions were only needed for KMeans; raw preserves the
         # absolute gradient-norm magnitudes that drive RBF distances and variance.
         return cluster_labels, raw_fingerprints, clustering_metrics, layer_importances
-    
-    def _extract_fingerprint(self, model: nn.Module, dataset: Subset) -> Tuple[Dict, Dict, list]:
-        """Extract gradient fingerprint from a client's local training.
-        
-        Returns:
-            (averaged_grads, layer_importance, per_batch_grads): gradient dict, per-layer importance scores,
-            and a list of per-batch gradient dicts collected during fingerprinting (may be empty).
-        """
-        # Clear cache before starting
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-        
-        # Disable gradient checkpointing during fingerprinting:
-        # with batch_size=1 it re-runs the full forward pass per backward call,
-        # doubling computation time for long sequences (e.g. QNLI with 256 tokens).
-        gradient_checkpointing_disable = getattr(model, 'gradient_checkpointing_disable', None)
-        if callable(gradient_checkpointing_disable):
-            try:
-                gradient_checkpointing_disable()
-            except Exception:
-                pass
-        
-        # Limit dataset to fingerprint_samples for memory efficiency
-        fingerprint_size = min(len(dataset), self.config.fingerprint_samples)
-        # Safely create subset - handle both Subset and Dataset
-        if hasattr(dataset, 'indices'):
-            # dataset is already a Subset
-            selected_indices = dataset.indices[:fingerprint_size]
-            fingerprint_subset = Subset(dataset.dataset, selected_indices)
-        else:
-            # dataset is a raw Dataset
-            fingerprint_subset = Subset(dataset, list(range(fingerprint_size)))
-        
-        print(f"(using {fingerprint_size} samples)", end=" ")
-        
-        # Use smaller batch size for memory-intensive fingerprint extraction
-        dataloader = DataLoader(fingerprint_subset, batch_size=self.config.fingerprint_batch_size, shuffle=True)
-        # NO OPTIMIZER - we only need gradients, not weight updates
-        
-        model.train()
 
-        # ── Warm-start: head-only SGD for task-discriminative gradients ──────────
-        # Root cause of silhouette~0.05: freshly-reinit head (std=0.02) produces
-        # near-identical gradients across tasks. 3-5 head-only gradient steps give
-        # task-specific signal before fingerprint PCA (FedGroup/CFL recommendation).
-        # Only classifier/score/pre_classifier params are updated; backbone stays frozen
-        # so warm-start cost ≈ one tiny linear layer, not the full 14M param model.
-        _head_params = [p for n, p in model.named_parameters()
-                        if any(k in n for k in ('classifier', 'score', 'pre_classifier'))]
-        if _head_params:
-            _warmup_opt = torch.optim.AdamW(_head_params, lr=1e-4, weight_decay=0.01)
-            _warmup_loader = DataLoader(
-                fingerprint_subset, batch_size=self.config.fingerprint_batch_size, shuffle=True
-            )
-            _warmup_steps = 0
-            _max_warmup = 5  # 3-5 steps: sufficient for task-discriminative head (Sattler et al., CFL)
-            for _wb in _warmup_loader:
-                if _warmup_steps >= _max_warmup:
-                    break
-                _wi = _wb['input_ids'].to(self.device)
-                _wa = _wb['attention_mask'].to(self.device)
-                _wl = _wb['label'].to(self.device)
-                _warmup_opt.zero_grad()
-                with torch.cuda.amp.autocast(enabled=False):  # FP32 for stability
-                    _wout = model(input_ids=_wi, attention_mask=_wa, labels=_wl)
-                if _wout.loss is not None and not (torch.isnan(_wout.loss) or torch.isinf(_wout.loss)):
-                    _wout.loss.backward()
-                    torch.nn.utils.clip_grad_norm_(_head_params, 1.0)
-                    _warmup_opt.step()
-                del _wi, _wa, _wl, _wout
-                if torch.cuda.is_available():
-                    torch.cuda.empty_cache()
-                _warmup_steps += 1
-            model.zero_grad(set_to_none=True)
-            print(f"[warmup:{_warmup_steps}✓]", end=" ", flush=True)
-
-        # Online running-sum removed: averaged_grads is no longer returned.
-        # Only tensor_norms (scalars), grad_sum (head param vectors) and layer_norms kept.
-        running_sum: Dict[str, torch.Tensor] = {}   # kept for API compat; unused
-        running_count: Dict[str, int] = {}
-        layer_norms: Dict[str, List[float]] = {}    # grouped by layer → Phase 2 rank allocation
-        tensor_norms: Dict[str, List[float]] = {}   # per param tensor → norm² (diagnostics)
-        #
-        # grad_sum / grad_cnt: accumulate mean NORMALISED gradient *vector* for task-head
-        # parameters (classifier.weight, pre_classifier.weight, score.weight).
-        #
-        # Why head-gradient vectors, not norm scalars or sign fractions:
-        #   - Per-tensor norm²  → dominated by classifier (≈96% of total), indistinguishable
-        #     across tasks (all tasks start from same random init and converge at similar speed)
-        #   - P(g>0) polarity   → backbone polarity ≈ 0.5 for balanced class splits;
-        #     StandardScaler amplifies this constant to unit variance = pure noise
-        #   - Head gradient DIRECTION → encodes which hidden dims each task associates with
-        #     each class label.  SST2 trains the head toward sentiment token directions;
-        #     QNLI toward entailment-structure directions; etc.  Totally different vectors.
-        #     This is exactly the signal CFL (Sattler et al. 2021) uses for client clustering.
-        #
-        # Memory: classifier.weight (2×768=1536) + pre_classifier.weight (768×768=589K)
-        #   = ~591K floats per client = 2.3 MB — negligible.  No full backbone tensors.
-        # Cost: one additional norm+divide per head-param per batch — negligible.
-        _HEAD_KW = ('classifier', 'score', 'pre_classifier')  # task-head param name patterns
-        _HEAD_MAX_PARAMS = 700_000                             # safety cap (excludes giant layers)
-        grad_sum: Dict[str, torch.Tensor] = {}  # name → running sum of unit-normalised grads
-        grad_cnt: Dict[str, int] = {}
-        # grad_history stores compressed per-batch layer-norm snapshots (not full param tensors).
-        # Clustering uses PCA-projected per-tensor norms, not raw grad tensors.
-        # Full all-layer grad tensors would be ~264 MB × 15 × 12 clients — unacceptable.
-        grad_history: List[Dict[str, float]] = []
-        MAX_HISTORY = 15  # per client; stored as {layer_k: scalar_norm} dicts only
-        import re as _re
-
-        # Train for fingerprint_epochs to collect gradients
-        batch_limit = self.config.fingerprint_batches  # Total batches across all epochs
-        total_batches_processed = 0
-        
-        for epoch in range(self.config.fingerprint_epochs):
-            for batch_idx, batch in enumerate(dataloader):
-                if total_batches_processed >= batch_limit:
-                    break
-                
-                # Print progress every 5 batches
-                if total_batches_processed % 5 == 0:
-                    print(f"[{total_batches_processed}]", end="", flush=True)
-                
-                input_ids = batch['input_ids'].to(self.device)
-                attention_mask = batch['attention_mask'].to(self.device)
-                labels = batch['label'].to(self.device)
-                
-                # Zero gradients manually (no optimizer)
-                model.zero_grad(set_to_none=True)
-                
-                # Forward pass (FP32)
-                outputs = model(input_ids=input_ids, attention_mask=attention_mask, labels=labels)
-                loss = outputs.loss
-                
-                # Check for NaN before backward
-                if torch.isnan(loss) or torch.isinf(loss):
-                    print(f"⚠️", end="", flush=True)
-                    del input_ids, attention_mask, labels, outputs, loss
-                    if torch.cuda.is_available():
-                        torch.cuda.empty_cache()
-                    continue
-                
-                try:
-                    loss.backward()
-                except Exception as oom:
-                    print(f"⚠️OOM/ERR", end="", flush=True)
-                    model.zero_grad(set_to_none=True)
-                    del input_ids, attention_mask, labels, outputs, loss
-                    if torch.cuda.is_available():
-                        torch.cuda.empty_cache()
-                    total_batches_processed += 1
-                    continue
-
-                # Collect gradients from ALL layers for per-tensor norm² fingerprinting.
-                # Each named-parameter tensor contributes one scalar (its gradient norm²)
-                # to the ~72-dim raw fingerprint that feeds the 64-dim PCA projection.
-                # No full grad tensors are accumulated — only scalars kept.
-                grads_dict = {}
-                for name, param in model.named_parameters():
-                    if param.grad is not None:
-                        grad_cpu = param.grad.detach().cpu()
-
-                        # No running_sum: we only need per-tensor and per-layer norms.
-
-                        # Layer importance (squared norm) — classify by layer index
-                        layer_match = _re.search(r'layer[._](\d+)', name)
-                        if layer_match:
-                            layer_key = f'layer_{int(layer_match.group(1))}'
-                        elif 'classifier' in name or 'pooler' in name or 'pre_classifier' in name:
-                            layer_key = 'classifier'
-                        else:
-                            layer_key = 'other'
-                        grad_norm_sq = float((grad_cpu ** 2).sum())
-                        layer_norms.setdefault(layer_key, []).append(grad_norm_sq)
-                        tensor_norms.setdefault(name, []).append(grad_norm_sq)  # for diagnostics
-
-                        # Accumulate normalised head-parameter gradient vector.
-                        # Only for task-head params within the memory cap.
-                        if (any(k in name for k in _HEAD_KW)
-                                and grad_cpu.numel() <= _HEAD_MAX_PARAMS):
-                            g_flat  = grad_cpu.float().flatten()
-                            g_norm  = g_flat.norm()
-                            if g_norm > 1e-12:
-                                g_unit = g_flat / g_norm
-                                if name not in grad_sum:
-                                    grad_sum[name] = g_unit.clone()
-                                    grad_cnt[name] = 1
-                                else:
-                                    grad_sum[name].add_(g_unit)
-                                    grad_cnt[name] += 1
-
-                        grads_dict[name] = grad_cpu
-
-                # Keep a small compressed snapshot (per-batch layer norms) for diagnostics.
-                # Do NOT store full grad tensors — with all-layer collection that would be
-                # ~264 MB per snapshot and grad_history is not used by the KMeans clusterer.
-                if grads_dict and len(grad_history) < MAX_HISTORY:
-                    batch_norms: Dict[str, float] = {}
-                    for _n, _g in grads_dict.items():
-                        _lm = _re.search(r'layer[._](\d+)', _n)
-                        if _lm:
-                            _lk = f'layer_{int(_lm.group(1))}'
-                        elif any(_k in _n for _k in ('classifier', 'pooler', 'pre_classifier')):
-                            _lk = 'classifier'
-                        else:
-                            _lk = 'other'
-                        batch_norms[_lk] = batch_norms.get(_lk, 0.0) + float((_g ** 2).sum())
-                    grad_history.append(batch_norms)
-
-                # Clear gradients immediately
-                model.zero_grad(set_to_none=True)
-                del input_ids, attention_mask, labels, outputs, loss, grads_dict
-                if torch.cuda.is_available():
-                    torch.cuda.empty_cache()
-                
-                total_batches_processed += 1
-            
-            # Break outer loop if limit reached
-            if total_batches_processed >= batch_limit:
-                break
-        
-        # Build per-tensor / per-layer importance dicts and mean gradient direction.
-        if tensor_norms:
-            tensor_importance = {name: float(np.mean(v)) for name, v in tensor_norms.items()}
-            layer_importance  = {k:    float(np.mean(v)) for k,    v in layer_norms.items()}
-            # Mean normalised gradient vector for each head parameter.
-            # Dividing by count gives the average unit gradient direction over all batches.
-            mean_grad_vecs: Dict[str, np.ndarray] = {
-                name: (grad_sum[name] / grad_cnt[name]).numpy()
-                for name in grad_sum if grad_cnt.get(name, 0) > 0
-            }
-            return tensor_importance, mean_grad_vecs, layer_importance, grad_history
-        else:
-            # Fallback: empty dicts — caller will apply oracle clustering
-            return {}, {}, {}, []
-    
     def _phase2_rank_allocation(
         self, 
         cluster_labels: Dict[int, int],
@@ -1217,19 +1066,19 @@ class ATLASIntegratedTrainer:
                 importance_scores = {}
                 
                 if raw_importance is not None:
-                    # Map layer names to layer indices
-                    for i in range(6):  # DistilBERT has 6 transformer layers
+                    # Map layer names to layer indices (use actual model depth)
+                    for i in range(self.model_num_layers):
                         layer_key = f'layer_{i}'
                         if layer_key in raw_importance:
                             importance_scores[layer_key] = raw_importance[layer_key]
                         else:
                             # Fallback: heuristic (later layers more important)
-                            importance_scores[layer_key] = 0.5 + (i / 6.0)
+                            importance_scores[layer_key] = 0.5 + (i / max(self.model_num_layers, 1))
                 else:
                     # No importance info available: fall back to deterministic heuristic
-                    for i in range(6):
+                    for i in range(self.model_num_layers):
                         layer_key = f'layer_{i}'
-                        importance_scores[layer_key] = 0.5 + (i / 6.0)
+                        importance_scores[layer_key] = 0.5 + (i / max(self.model_num_layers, 1))
                 
                 # Add classifier importance if present in raw_importance
                 if raw_importance is not None and 'classifier' in raw_importance:
@@ -1242,9 +1091,10 @@ class ATLASIntegratedTrainer:
             else:
                 # Fallback: heuristic importance
                 importance_scores = {}
-                for i in range(6):  # DistilBERT has 6 transformer layers
+                _n = self.model_num_layers
+                for i in range(_n):  # use actual model depth
                     # Layer importance increases with depth (0.5 to 1.5)
-                    layer_importance = 0.5 + (i / 6.0)
+                    layer_importance = 0.5 + (i / max(_n, 1))
                     # Scale by cluster difficulty
                     importance_scores[f'layer_{i}'] = layer_importance * (0.5 + 0.5 * cluster_complexity)
             
@@ -1261,22 +1111,48 @@ class ATLASIntegratedTrainer:
             lora_ranks = self.rank_allocator.allocate_ranks(
                 device_profile=device_profile,
                 importance_scores=importance_scores,
-                n_layers=6,
+                n_layers=self.model_num_layers,
                 split_point=None  # Could be adapted for split learning
             )
-            
+
+            # Task-specific rank cap: small datasets (e.g. MRPC with ~3600 samples)
+            # don't benefit from high-rank adapters with few clients — large ranks
+            # overfit quickly and slow convergence. Cap per-task max rank here.
+            TASK_MAX_RANKS = {'mrpc': 16}
+            task_max = TASK_MAX_RANKS.get(client_data.task_name, None)
+            if task_max is not None:
+                if isinstance(lora_ranks, dict):
+                    lora_ranks = {k: min(v, task_max) for k, v in lora_ranks.items()}
+                else:
+                    lora_ranks = [min(r, task_max) for r in lora_ranks]
+                print(f"    [RANK CAP] Client {client_data.client_id} (task={client_data.task_name}): "
+                      f"ranks capped at {task_max} → {lora_ranks}")
+
             # Validate memory constraint
             is_valid, adapter_mb = self.rank_allocator.validate_memory_constraint(
                 lora_ranks, device_profile
             )
-            
+
+            # ── Dynamic split selection (ImprovedSplitSelector) ──────────────
+            # Scores memory, communication cost, layer importance, and workload
+            # balance for this specific device profile and task.
+            opt_split = self._compute_device_split(
+                device_profile=device_profile,
+                task_name=client_data.task_name,
+                client_id=client_data.client_id,
+            )
+            print(f"    [SPLIT] Client {client_data.client_id} ({device_type}): "
+                  f"optimal split = layer {opt_split}/{self.model_num_layers} "
+                  f"(task={client_data.task_name})")
+
             device_configs[client_data.client_id] = {
                 'device_profile': device_profile,
                 'lora_ranks': lora_ranks,
                 'cluster_stats': cluster_stats.get(cluster_id, {}),
                 'importance_scores': importance_scores,
                 'memory_valid': is_valid,
-                'adapter_memory_mb': adapter_mb
+                'adapter_memory_mb': adapter_mb,
+                'split_layer': opt_split,
             }
             
             client_data.lora_ranks = lora_ranks
@@ -1285,8 +1161,13 @@ class ATLASIntegratedTrainer:
                   f"ranks={lora_ranks}, memory={adapter_mb:.1f}MB, valid={is_valid}")
         
         print(f"\n✓ Phase 2 complete: Allocated heterogeneous ranks for {len(device_configs)} clients")
+        split_summary = ", ".join(
+            f"C{cid}→L{cfg['split_layer']}"
+            for cid, cfg in sorted(device_configs.items())
+        )
+        print(f"  Split assignments: {split_summary}")
         return device_configs
-    
+
     def _phase2_homogeneous_ranks(
         self, 
         cluster_labels: Dict[int, int]
@@ -1321,20 +1202,31 @@ class ATLASIntegratedTrainer:
             device_profile = self.device_profiler.profile_device(device_type)
             
             # Assign same rank to all layers
-            lora_ranks = [homogeneous_rank] * 6  # 6 layers for DistilBERT/GPT-2
+            lora_ranks = [homogeneous_rank] * self.model_num_layers
             
             # Validate memory constraint
             is_valid, adapter_mb = self.rank_allocator.validate_memory_constraint(
                 lora_ranks, device_profile
             )
-            
+
+            # ── Dynamic split selection ───────────────────────────────────────
+            opt_split = self._compute_device_split(
+                device_profile=device_profile,
+                task_name=client_data.task_name,
+                client_id=client_id,
+            )
+            print(f"    [SPLIT] Client {client_id} ({device_type}): "
+                  f"optimal split = layer {opt_split}/{self.model_num_layers} "
+                  f"(task={client_data.task_name})")
+
             device_configs[client_id] = {
                 'device_profile': device_profile,
                 'lora_ranks': lora_ranks,
                 'cluster_stats': {},  # No cluster complexity for homogeneous
                 'importance_scores': {},
                 'memory_valid': is_valid,
-                'adapter_memory_mb': adapter_mb
+                'adapter_memory_mb': adapter_mb,
+                'split_layer': opt_split,
             }
             
             client_data.lora_ranks = lora_ranks
@@ -1343,8 +1235,70 @@ class ATLASIntegratedTrainer:
                   f"ranks={lora_ranks}, memory={adapter_mb:.1f}MB, valid={is_valid}")
         
         print(f"\n✓ Phase 2 complete: Allocated homogeneous ranks for {len(device_configs)} clients")
+        split_summary = ", ".join(
+            f"C{cid}→L{cfg['split_layer']}"
+            for cid, cfg in sorted(device_configs.items())
+        )
+        print(f"  Split assignments: {split_summary}")
         return device_configs
-    
+
+    def _compute_device_split(
+        self,
+        device_profile: Dict,
+        task_name: str,
+        client_id: int,
+    ) -> int:
+        """
+        Compute per-device optimal split layer.
+
+        Algorithm
+        ---------
+        1. Compute accurate per-layer model weight cost from config
+           (full_size_mb / n_layers).  Avoids the 50 MB/layer hardcode that
+           was wrong for GPT-2 XL (~129 MB/layer) and Qwen-1.5B (~211 MB/layer).
+
+        2. Map device compute_ratio to a three-tier candidate split:
+             Weak   (ratio < 1.2)  -> n // 3   (cpu_2gb)
+             Medium (1.2 <= r < 2.0)-> n // 2   (tablet_4gb)
+             Strong (ratio >= 2.0)  -> 2n // 3  (laptop_8gb, gpu_*)
+
+        3. Clamp the candidate to the maximum number of layers that fit in the
+           device's memory budget (70% utilisation cap, accounting for LoRA
+           adapters and activations on top of raw weights).
+
+        Example: cpu_2gb + GPT-2 XL (129 MB/layer, 2 GB budget):
+          max_layers = floor(2048 * 0.70 / 129) = 11 -> split capped at 11.
+        Example: cpu_2gb + DistilBERT (45 MB/layer):
+          max_layers = floor(2048 * 0.70 / 45) = 31 -> tier candidate 2 kept.
+        """
+        n             = self.model_num_layers
+        compute_ratio = device_profile.get('compute_ratio', 1.0)
+        memory_mb     = device_profile.get('memory_mb', 2048)
+
+        # Accurate per-layer weight size from config
+        mb_per_layer = self.model_full_size_mb / max(n, 1)
+
+        # Max layers that fit on this device (70% memory budget)
+        max_fit = max(1, int(memory_mb * 0.70 / mb_per_layer))
+
+        # Tier fraction is applied to min(max_fit, n) so that:
+        #  - when the model fits easily (DistilBERT on any device), effective_n = n
+        #    and the tier gives the same 1/3, 1/2, 2/3 of total layers as before.
+        #  - when the model is large (GPT-2 XL on cpu_2gb, max_fit < n), the tier
+        #    fraction is taken over max_fit, so a weak device never exceeds its
+        #    budget AND the fraction is consistent across model sizes.
+        effective_n = min(max_fit, n)
+
+        if compute_ratio < 1.2:
+            candidate = max(1, effective_n // 3)             # weak
+        elif compute_ratio < 2.0:
+            candidate = max(1, effective_n // 2)             # medium
+        else:
+            candidate = min(effective_n - 1, (2 * effective_n) // 3)  # strong
+
+        split = min(candidate, max_fit)  # safety clamp
+        return int(split)
+
     def _phase3_4_training(
         self,
         cluster_labels: Dict[int, int],
@@ -1358,8 +1312,6 @@ class ATLASIntegratedTrainer:
         Phase 3 & 4: Split federated learning + Laplacian regularization.
         Real training with heterogeneous LoRA + task-aware aggregation + personalization.
         """
-        print("[Phase 2] Profiling devices and allocating ranks...")  # Start of Phase 2
-
         mode = getattr(self.config, 'mode', 'atlas')
         
         # Build task graph for Phase 4 (Laplacian)
@@ -1377,23 +1329,13 @@ class ATLASIntegratedTrainer:
 
             from src.phase4_laplacian import compute_adjacency_weights
 
-            # block_diagonal=False: allow edges across ALL client pairs (cross-cluster
-            # included).  The same-task filter below then removes every edge where
-            # task(k) ≠ task(ℓ), so only genuinely similar clients remain connected.
-            # This is strictly better than block_diagonal=True because:
-            #   - block_diagonal=True  → only intra-cluster edges: cola client 7
-            #     (cluster 0) can never pull cola clients 6,8 (cluster 3).
-            #   - block_diagonal=False + same-task filter → cross-cluster same-task
-            #     edges are kept; cross-task edges (the real source of contamination)
-            #     are zeroed regardless of cluster membership.
-            laplacian_block_diagonal = False
-
+            # The same-task filter below then zeros every edge where task(k) ≠ task(ℓ),
+            # so only genuinely similar clients remain connected.
             adjacency_weights = compute_adjacency_weights(
                 task_clusters=task_clusters,
                 gradient_fingerprints=fingerprints,
                 method=self.config.laplacian_adjacency_method,
                 mira_alpha=self.config.mira_alpha,
-                block_diagonal=laplacian_block_diagonal,
                 ensure_connectivity=self.config.ensure_connectivity,
                 rbf_clip_percentile=95.0,
                 rbf_floor=0.05,
@@ -1401,7 +1343,7 @@ class ATLASIntegratedTrainer:
 
             # ── Same-task edge filter ──────────────────────────────────────────────
             # Phase 1 clustering is gradient-based and may produce impure clusters
-            # (e.g. cluster 3 can contain mrpc + cola + qnli clients).  Keeping
+            # (e.g. cluster 3 can contain mrpc + qnli clients).  Keeping
             # cross-task Laplacian edges pulls client k's LoRA weights toward a
             # neighbour on a DIFFERENT task, which acts as destructive noise rather
             # than personalisation signal.  We retain only edges where both endpoints
@@ -1441,7 +1383,10 @@ class ATLASIntegratedTrainer:
         # Create per-client models (MIRA approach: each client keeps own model)
         # NOTE: to avoid GPU OOM on a single GPU we keep models on CPU and move
         # a single client model to GPU only while training/evaluating it.
-        use_split_learning = mode not in ('local_only', 'standard_fl')
+        # fedavg_cluster is a local-training baseline (intra-cluster FedAvg only);
+        # it must NOT use split learning, otherwise per-batch activation exchange
+        # inflates its reported communication by ~200× vs standard_fl.
+        use_split_learning = mode not in ('local_only', 'standard_fl', 'fedavg_cluster')
         client_models = {}
         for client_data in self.clients_data:
             _, _, _, num_labels = self.dataset_map[client_data.task_name]
@@ -1479,11 +1424,34 @@ class ATLASIntegratedTrainer:
             #   1. All clients share IDENTICAL classifier init → no label inversion
             #   2. W ≠ 0 → gradients flow through entire server + back to client
             #   3. Bias = log(prior) → strong initial gradient signal
+            #
+            # Fix (standard_fl): For non-split modes the server never calls
+            # sync_to_client, so zero-init would leave W=0 forever → loss
+            # stuck at ln(2).  Use seeded Xavier init instead so that:
+            #   (a) W ≠ 0  → gradient flows backward to LoRA from round 1
+            #   (b) All clients in the same task share the same seed → no
+            #       label inversion after FedAvg
             head = getattr(model, 'classifier', None) or getattr(model, 'score', None)
             if head is not None:
-                torch.nn.init.zeros_(head.weight)
-                if head.bias is not None:
-                    torch.nn.init.zeros_(head.bias)
+                if use_split_learning:
+                    # Zero-init placeholder; overwritten by sync_to_client below.
+                    torch.nn.init.zeros_(head.weight)
+                    if head.bias is not None:
+                        torch.nn.init.zeros_(head.bias)
+                else:
+                    # Xavier uniform init (task-seed so clients within a task
+                    # start identically → stable FedAvg).
+                    _rng = torch.Generator()
+                    _rng.manual_seed(self.config.seed + client_data.cluster_id * 1000)
+                    _fan_in = head.weight.size(1)
+                    _fan_out = head.weight.size(0)
+                    _bound = math.sqrt(6.0 / (_fan_in + _fan_out))
+                    with torch.no_grad():
+                        head.weight.uniform_(-_bound, _bound, generator=_rng)
+                    if head.bias is not None:
+                        torch.nn.init.zeros_(head.bias)
+                    print(f"  Client {client_data.client_id}: Xavier classifier W "
+                          f"(bound={_bound:.4f}, |W|={head.weight.norm().item():.4f})")
 
             # Enable gradient checkpointing before LoRA (saves memory during training)
             if hasattr(model, 'gradient_checkpointing_enable') and callable(getattr(model, 'gradient_checkpointing_enable', None)):
@@ -1492,21 +1460,40 @@ class ATLASIntegratedTrainer:
                 except Exception as e:
                     print(f"[Warning: gradient checkpointing setup failed: {e}]")
             
-            # Apply LoRA restricted to bottom split_layer layers (split learning mode)
-            # Top layers will be managed by the server (no LoRA adapters there)
+            # Apply LoRA restricted to this client's split_layer (split learning mode).
+            # Use the per-client split computed in Phase 2; fall back to global config.
+            if use_split_learning:
+                _client_split = (
+                    device_configs.get(client_data.client_id, {})
+                    .get('split_layer', self.config.split_layer)
+                )
+            else:
+                _client_split = None
             model = self._apply_heterogeneous_lora(
                 model,
                 client_data.lora_ranks,
-                split_layer=self.config.split_layer if use_split_learning else None,
+                split_layer=_client_split,
             )
+
+            # Fix (standard_fl): _apply_heterogeneous_lora uses
+            # TaskType.FEATURE_EXTRACTION + modules_to_save=None, which leaves
+            # the classifier head frozen (requires_grad=False) in the PEFT model.
+            # For standard_fl the client owns the classifier, so we must unfreeze
+            # it here so that it both (a) receives gradients and (b) appears in
+            # the optimizer in _train_client_local.
+            if not use_split_learning:
+                for name, param in model.named_parameters():
+                    if any(kw in name for kw in ['classifier', 'score', 'pre_classifier']):
+                        param.requires_grad_(True)
+
             # Ensure model is on CPU (do not call .to(self.device) here)
             model.to('cpu')
             client_models[client_data.client_id] = model
         
         print(f"  ✓ Created {len(client_models)} personalized client models")
 
-        # ── Build genuine split-server models (atlas / atlas_no_laplacian / fedavg_cluster) ──
-        # local_only and standard_fl use full local training, so no server needed.
+        # ── Build genuine split-server models (atlas / atlas_no_laplacian) ──────────────────
+        # local_only, standard_fl, and fedavg_cluster use full local training; no server needed.
         split_server_models: Dict[int, Dict] = {}
         if use_split_learning:
             split_server_models = self._build_split_server_models(task_clusters, device_configs)
@@ -1546,6 +1533,7 @@ class ATLASIntegratedTrainer:
             'cluster_assignments': {int(k): [int(x) for x in v] for k, v in task_clusters.items()}
         }
 
+        start_time = time.time()  # wall-clock for convergence reporting
         results = {
             'round_metrics': [],
             'final_accuracies': {},
@@ -1577,6 +1565,8 @@ class ATLASIntegratedTrainer:
         round_accuracies: Dict[int, float] = {}
         round_canonical: Dict[int, float] = {}
         round_f1s: Dict[int, float] = {}
+        # Track how many rounds each weak client was dropped (fedavg_cluster / standard_fl only)
+        skipped_all_rounds: Dict[int, int] = {}
 
         # ── Per-client server optimizer state snapshots (Fix 21) ────────────
         # The cluster server is shared sequentially among all clients in a
@@ -1619,6 +1609,18 @@ class ATLASIntegratedTrainer:
             print(f"\n{'='*70}")
             print(f"ROUND {round_idx + 1}/{self.config.num_rounds}")
             print(f"{'='*70}", flush=True)
+
+            # Cosine LR annealing: decay from base_lr to lr_min_fraction*base_lr
+            # across all rounds so later rounds fine-tune rather than memorize.
+            _base_lr = self.config.learning_rate
+            if getattr(self.config, 'lr_cosine_decay', True):
+                _min_lr = _base_lr * getattr(self.config, 'lr_min_fraction', 0.1)
+                round_lr = _min_lr + (_base_lr - _min_lr) * 0.5 * (
+                    1.0 + math.cos(math.pi * round_idx / max(self.config.num_rounds, 1))
+                )
+            else:
+                round_lr = _base_lr
+            print(f"[Round {round_idx+1}] LR = {round_lr:.2e} (base={_base_lr:.2e})", flush=True)
             
             # Step 1: Client training
             # - local_only / standard_fl  → full local training (no split)
@@ -1630,6 +1632,13 @@ class ATLASIntegratedTrainer:
             # Communication counters (bytes) for this round
             comm_upload = {c.client_id: 0 for c in self.clients_data}
             comm_download = {c.client_id: 0 for c in self.clients_data}
+            # LoRA-weight-only upload bytes per client per round.
+            # Comparable across all methods (excludes split-learning activation exchange).
+            # ATLAS:       bottom-split LoRA params uploaded for Laplacian aggregation.
+            # standard_fl: same as comm_upload (LoRA weights sent for FedAvg).
+            lora_upload = {c.client_id: 0 for c in self.clients_data}
+            # Clients whose training is skipped this round (weak-device graceful failure)
+            _skipped_this_round: set = set()
 
             for _ci, client_data in enumerate(self.clients_data):
                 cid = client_data.client_id
@@ -1663,11 +1672,16 @@ class ATLASIntegratedTrainer:
                             srv_optimizer.load_state_dict(
                                 client_server_opt_states[cid]
                             )
+                            # Update lr to current round's decayed value
+                            # (state_dict restores the old round's lr).
+                            for _pg in srv_optimizer.param_groups:
+                                _pg['lr'] = round_lr
                         except Exception:
                             # Shape mismatch: fall back to fresh optimizer for this client.
                             srv_optimizer = torch.optim.AdamW(
                                 srv_model.parameters(),
-                                lr=self.config.learning_rate,
+                                lr=round_lr,
+                                weight_decay=0.01,
                             )
                             srv['optimizer'] = srv_optimizer
                     else:
@@ -1675,7 +1689,8 @@ class ATLASIntegratedTrainer:
                         # optimizer (no stale momentum from other clients).
                         srv_optimizer = torch.optim.AdamW(
                             srv_model.parameters(),
-                            lr=self.config.learning_rate,
+                            lr=round_lr,
+                            weight_decay=0.01,
                         )
                         srv['optimizer'] = srv_optimizer
 
@@ -1688,6 +1703,7 @@ class ATLASIntegratedTrainer:
                         client_id=cid,
                         task_name=client_data.task_name,
                         client_lora_opt_states=client_lora_opt_states,
+                        round_lr=round_lr,
                     )
                     # CRITICAL: synchronize server's trained top layers + classifier back to client
                     srv_model.sync_to_client(model)
@@ -1706,17 +1722,52 @@ class ATLASIntegratedTrainer:
                         }
                     client_server_opt_states[cid] = _cpu_opt
 
-                    comm_upload[cid]   = int(up_bytes)
-                    comm_download[cid] = int(dn_bytes)
+                    comm_upload[cid]   = int(up_bytes)   # activation exchange bytes
+                    comm_download[cid] = int(dn_bytes)   # gradient exchange bytes
+                    # LoRA-only upload: bottom-split LoRA param sizes (model-update comms).
+                    # INT8 quantization halves the per-element byte cost for LoRA adapter
+                    # matrices (lora_a / lora_b).  Classifier/score params use FP32.
+                    _trainable_kw_lora = ['lora', 'classifier', 'score']
+                    _use_quant = getattr(self.config, 'quant_lora_comm', True)
+                    lora_upload[cid] = sum(
+                        (int8_bytes(p) if is_lora_param(n) and _use_quant
+                         else p.numel() * p.element_size())
+                        for n, p in client_models[cid].named_parameters()
+                        if any(kw in n.lower() for kw in _trainable_kw_lora)
+                    )
 
                 else:
                     # ── Full local training (local_only / standard_fl) ──────
-                    loss = self._train_client_local(
-                        model,
-                        client_data.train_dataset,
-                        client_id=cid,
-                        task_name=client_data.task_name,
-                    )
+                    # Graceful degradation for weak-device clients in fedavg_cluster /
+                    # standard_fl: these modes assign a homogeneous rank to all clients
+                    # regardless of device tier, which can exceed the capacity of weak
+                    # (≤2 GB) devices.  ATLAS avoids this via heterogeneous Phase-2
+                    # allocation.  Here, overloaded clients skip training and are
+                    # excluded from aggregation so the run does not crash.
+                    if (mode in ('fedavg_cluster', 'standard_fl')
+                            and self._is_weak_device_overloaded(cid, device_configs)):
+                        _cfg   = device_configs.get(cid, {})
+                        _ranks = _cfg.get('lora_ranks', [])
+                        _sugg  = _cfg.get('device_profile', {}).get('suggested_ranks', [64])
+                        print(
+                            f"  ⚠️  [WEAK-DEVICE OVERLOADED] Client {cid} "
+                            f"({client_data.device_type}/{client_data.task_name}): "
+                            f"assigned rank {max(_ranks) if _ranks else '?'} > "
+                            f"device ceiling {max(_sugg)} — "
+                            f"skipping training (graceful degradation).",
+                            flush=True,
+                        )
+                        _skipped_this_round.add(cid)
+                        skipped_all_rounds[cid] = skipped_all_rounds.get(cid, 0) + 1
+                        loss = float('inf')
+                    else:
+                        loss = self._train_client_local(
+                            model,
+                            client_data.train_dataset,
+                            client_id=cid,
+                            task_name=client_data.task_name,
+                            round_lr=round_lr,
+                        )
                     # No per-batch activation exchange → comm is 0 here;
                     # LoRA-weight upload is counted after aggregation below.
                     comm_upload[cid]   = 0
@@ -1740,35 +1791,37 @@ class ATLASIntegratedTrainer:
                 print(f"[Round {round_idx+1}] Laplacian skipped (mode=local_only)")
             elif mode == 'standard_fl':
                 # Standard FL: global FedAvg across all clients (no clustering)
-                # Count LoRA-weight upload for each client (sent to server at round end).
-                for cid in list(client_models.keys()):
-                    up = 0
-                    for name, param in client_models[cid].named_parameters():
-                        if 'lora' in name.lower():
-                            up += param.numel() * param.element_size()
-                    comm_upload[cid] = int(up)
-
                 print(f"\n[Round {round_idx+1}] Global FedAvg (standard FL)...", flush=True)
+                _active_for_agg = [c for c in sorted(client_models.keys())
+                                   if c not in _skipped_this_round]
+                if _skipped_this_round:
+                    print(f"  [standard_fl] Excluding {len(_skipped_this_round)} weak-device "
+                          f"client(s) from FedAvg: {sorted(_skipped_this_round)}", flush=True)
                 all_weights = [
                     {name: param.data.clone() for name, param in client_models[cid].named_parameters()}
-                    for cid in range(len(client_models))
+                    for cid in _active_for_agg
                 ]
                 avg_state = self._fedavg_aggregate(all_weights)
                 print(f"[Round {round_idx+1}] Laplacian skipped (mode=standard_fl)", flush=True)
 
-                # Measure upload (LoRA weights sent to server) and download (avg sent back)
+                # Measure upload (all trainable weights sent to server) and download (avg sent back).
                 trainable_kw = ['lora', 'classifier', 'score', 'modules_to_save']
+                _use_quant = getattr(self.config, 'quant_lora_comm', True)
                 for cid in list(client_models.keys()):
-                    up = sum(p.numel() * p.element_size()
-                             for n, p in client_models[cid].named_parameters()
-                             if any(kw in n.lower() for kw in trainable_kw))
+                    up = sum(
+                        (int8_bytes(p) if is_lora_param(n) and _use_quant
+                         else p.numel() * p.element_size())
+                        for n, p in client_models[cid].named_parameters()
+                        if any(kw in n.lower() for kw in trainable_kw)
+                    )
                     comm_upload[cid] = int(up)
+                    lora_upload[cid] = int(up)
                     dn = sum(t.numel() * t.element_size()
                              for k, t in avg_state.items()
                              if any(kw in k.lower() for kw in trainable_kw))
                     comm_download[cid] = int(dn)
 
-                # Direct load — no broken _flat_state_to_lora conversion
+                # Load averaged state into every client (classifiers overwritten intentionally).
                 for cid in client_models:
                     try:
                         client_models[cid].load_state_dict(avg_state, strict=False)
@@ -1781,10 +1834,12 @@ class ATLASIntegratedTrainer:
                                     pass
             else:
                 # ── MIRA-compliant pipeline ────────────────────────────────────────────
-                # atlas mode   : Laplacian regularization REPLACES cluster FedAvg.
-                #                Applied directly on local W_k(t,R) — before any averaging.
-                #                Each client retains a DISTINCT personalized model; the
-                #                Laplacian nudges similar clients together without overwriting.
+                # atlas mode   : Laplacian regularization on LoRA params (MIRA-style
+                #                personalization) + intra-cluster FedAvg on non-LoRA
+                #                params (classifier, score) for consistent shared layers.
+                #                (Fix 28: previously Laplacian REPLACED all aggregation,
+                #                leaving non-LoRA params unshared — root cause of atlas
+                #                underperforming atlas_no_laplacian.)
                 # other modes  : intra-cluster raFLoRA rank-partitioned FedAvg (no Laplacian).
                 #                HeLoRA design: server builds a max-rank template; each client
                 #                receives only its own r_k-slice → retains hetero-rank
@@ -1796,24 +1851,48 @@ class ATLASIntegratedTrainer:
                 if mode == 'atlas':
                     # ── Step 1: Collect raw local states W_k(t,R) ────────────────────
                     # These are the post-training, pre-aggregation weights for every client.
-                    local_flat: Dict[int, Dict[str, torch.Tensor]] = {
+                    #
+                    # INT8-quantized LoRA transmission (quant_lora_comm=True):
+                    #   LoRA adapter params (lora_a / lora_b) are quantized to INT8
+                    #   and then immediately dequantized to FP32 before the Laplacian
+                    #   update.  This simulates the rounding noise a client's neighbor
+                    #   would observe after transmitting over the network at INT8
+                    #   precision.  Dequantization before the update is critical:
+                    #   W_k − W_l must be computed in FP32 to avoid INT8 truncation
+                    #   of the difference (which would otherwise zero-out small nudges).
+                    _use_quant = getattr(self.config, 'quant_lora_comm', True)
+                    _raw_states: Dict[int, Dict[str, torch.Tensor]] = {
                         cid: {n: p.data.clone()
                               for n, p in client_models[cid].named_parameters()}
                         for cid in client_models
                     }
+                    if _use_quant:
+                        local_flat: Dict[int, Dict[str, torch.Tensor]] = {}
+                        for cid, raw_state in _raw_states.items():
+                            q_lora, passthru = quantize_lora_state(raw_state)
+                            local_flat[cid] = dequantize_lora_state(
+                                q_lora, passthru, target_dtype=torch.float32
+                            )
+                        print(
+                            f"  [INT8 quant→dequant] LoRA weights simulated for "
+                            f"{len(local_flat)} clients before Laplacian.",
+                            flush=True,
+                        )
+                    else:
+                        local_flat = _raw_states
 
                     # ── Step 2: MIRA Laplacian on raw locals ──────────────────────────
                     # Formula: W_k ← W_k − η Σ_{ℓ∈N_k} a_kℓ (W_k − W_ℓ)
                     # heterogeneous ranks handled by raFLoRA-style truncate-then-pad.
                     #
                     # Only LoRA params are regularized — NOT top-layer / classifier weights.
-                    # Reason: clients train SEQUENTIALLY on a shared server.  After training,
-                    # local_flat[k] contains server weights snapshotted at different times
-                    # (client 0 → server state after client 0; client 11 → server state after
-                    # all 12 clients).  Laplacian-averaging these time-inconsistent snapshots
-                    # is noise.  Top layers and classifier are handled by the server-sync step
-                    # (sync_from_client + broadcast sync_to_client) which uses the FINAL,
-                    # converged server state and is applied consistently to every client.
+                    # Non-LoRA params (classifier, score, pre_classifier) are averaged
+                    # within each cluster in Step 2b below, identically to the raFLoRA
+                    # path used by atlas_no_laplacian.  This is necessary because clients
+                    # in a cluster train SEQUENTIALLY on a shared server, producing
+                    # time-inconsistent top-layer snapshots.  Without within-cluster
+                    # averaging, these divergent classifier states were the dominant cause
+                    # of atlas underperforming atlas_no_laplacian (Fix 28).
                     #
                     # Warmup: skip Laplacian for the first `laplacian_warmup_rounds` rounds.
                     # LoRA weights initialise at ~0 and are far from meaningful minima;
@@ -1914,6 +1993,76 @@ class ATLASIntegratedTrainer:
                             )
                         aggregated_flat = local_flat
 
+                    # ── Step 2b: Intra-cluster averaging of non-LoRA params ───────
+                    # (Fix 28) The Laplacian regularizes only LoRA adapters, which
+                    # is correct per MIRA.  However non-LoRA trainable parameters
+                    # (classifier, score, pre_classifier) are trained SEQUENTIALLY
+                    # on the shared cluster server, so each client's snapshot comes
+                    # from a different point in the sequential schedule.  Without
+                    # averaging these params within the cluster, clients diverge on
+                    # the classification head — the dominant source of the accuracy
+                    # gap vs atlas_no_laplacian (which averages ALL params via
+                    # raFLoRA).  We therefore average non-LoRA trainable params
+                    # within each cluster, identically to the raFLoRA path.
+                    # LoRA params are left untouched (already handled by Laplacian
+                    # or passed through raw during warmup).
+                    _lora_skip_kw = ['lora_a', 'lora_b']
+                    _n_nonlora_avg = 0
+                    for cluster_id, client_ids_cl in task_clusters.items():
+                        if len(client_ids_cl) < 2:
+                            continue
+                        # Collect the union of param keys across clients in this cluster
+                        _cl_keys: set = set()
+                        for _cid in client_ids_cl:
+                            if _cid in aggregated_flat:
+                                _cl_keys.update(aggregated_flat[_cid].keys())
+                        for _key in _cl_keys:
+                            # Skip LoRA adapter matrices (handled by Laplacian)
+                            _kl = _key.lower()
+                            if any(_lk in _kl for _lk in _lora_skip_kw):
+                                continue
+                            # Gather tensors for this key across cluster members
+                            _tensors = {}
+                            for _cid in client_ids_cl:
+                                if _cid in aggregated_flat and _key in aggregated_flat[_cid]:
+                                    _tensors[_cid] = aggregated_flat[_cid][_key]
+                            if len(_tensors) < 2:
+                                continue
+                            _shapes = {c: t.shape for c, t in _tensors.items()}
+                            if len(set(_shapes.values())) == 1:
+                                # Same shape: straightforward FedAvg
+                                _avg = torch.stack(
+                                    [t.float() for t in _tensors.values()]
+                                ).mean(0)
+                                for _cid in _tensors:
+                                    aggregated_flat[_cid][_key] = _avg.to(
+                                        _tensors[_cid].dtype
+                                    )
+                                _n_nonlora_avg += 1
+                            else:
+                                # Shape mismatch (rare for non-LoRA): min-slice average
+                                _ndim = len(next(iter(_tensors.values())).shape)
+                                _min_shape = tuple(
+                                    min(_shapes[c][d] for c in _tensors)
+                                    for d in range(_ndim)
+                                )
+                                _slices = tuple(slice(0, s) for s in _min_shape)
+                                _avg_min = torch.stack(
+                                    [t[_slices].float() for t in _tensors.values()]
+                                ).mean(0)
+                                for _cid in _tensors:
+                                    _merged = _tensors[_cid].clone().float()
+                                    _merged[_slices] = _avg_min
+                                    aggregated_flat[_cid][_key] = _merged.to(
+                                        _tensors[_cid].dtype
+                                    )
+                                _n_nonlora_avg += 1
+                    print(
+                        f"  Non-LoRA params: averaged {_n_nonlora_avg} keys "
+                        f"within {len(task_clusters)} clusters (Fix 28).",
+                        flush=True,
+                    )
+
                 else:
                     # ── intra-cluster raFLoRA / HeLoRA aggregation ────────────────────
                     # Modes: fedavg_cluster, atlas_no_laplacian, etc.
@@ -1930,13 +2079,65 @@ class ATLASIntegratedTrainer:
                         n_clients = len(client_ids)
                         print(f"  Group {cluster_id} ({n_clients} clients): raFLoRA", flush=True)
 
+                        _active_in_cluster = [c for c in client_ids
+                                              if c not in _skipped_this_round]
+                        if len(_active_in_cluster) < len(client_ids):
+                            print(f"  [fedavg_cluster] Group {cluster_id}: "
+                                  f"{len(client_ids)-len(_active_in_cluster)} weak-device "
+                                  f"client(s) excluded from raFLoRA aggregation.", flush=True)
                         client_states: Dict[int, Dict[str, torch.Tensor]] = {
                             cid: {n: p.data.clone()
                                   for n, p in client_models[cid].named_parameters()}
-                            for cid in client_ids
+                            for cid in _active_in_cluster
                         }
 
-                        # per_client[cid] will hold a state shaped to client cid's own ranks.
+                        # ── Performance-weighted aggregation ─────────────────────────
+                        # Weight each client by their previous-round canonical score so
+                        # that a persistently weak client (e.g., poor split_layer match)
+                        # contributes proportionally less to the cluster average, without
+                        # being excluded entirely.  Round 1 falls back to uniform weights
+                        # because round_canonical is not yet populated.
+                        # Reference: FedMA (Wang et al. NeurIPS 2020), contribution-
+                        # weighted FedAvg for heterogeneous FL clients.
+                        #
+                        # FIX (client-divergence):  A minimum weight floor is applied so
+                        # that no client receives less than 1/(k * MAX_WEIGHT_RATIO) of the
+                        # total weight, where k = cluster size.  Without this, a high-rank
+                        # client that starts slow (e.g., laptop_8gb on a small dataset like
+                        # MRPC) enters a negative feedback loop: low score → low aggregation
+                        # weight → less shared knowledge → even lower score next round.
+                        # Capping at MAX_WEIGHT_RATIO = 2 keeps score-proportional weighting
+                        # while guaranteeing every client benefits from aggregation.
+                        MAX_WEIGHT_RATIO = 2.0  # max imbalance between strongest/weakest client
+
+                        def _cluster_weights(cids):
+                            scores = {
+                                cid: round_canonical.get(cid)
+                                for cid in cids
+                            }
+                            valid = {cid: s for cid, s in scores.items() if s is not None and s > 0}
+                            if not valid or len(valid) < 2:
+                                # Uniform fallback (round 1 or single-client cluster)
+                                return {cid: 1.0 / len(cids) for cid in cids}
+                            total = sum(valid.values())
+                            # Clients with no score (e2e dummy) get uniform share
+                            n_missing = len(cids) - len(valid)
+                            fallback_w = (1.0 / len(cids)) if n_missing > 0 else 0.0
+                            w = {}
+                            for cid in cids:
+                                w[cid] = (valid[cid] / total * (1 - fallback_w * n_missing)
+                                          if cid in valid else fallback_w)
+                            # Apply minimum weight floor to prevent negative feedback loops.
+                            # No client's weight should fall below 1/(k * MAX_WEIGHT_RATIO).
+                            min_floor = 1.0 / (len(cids) * MAX_WEIGHT_RATIO)
+                            floored = {cid: max(w_val, min_floor) for cid, w_val in w.items()}
+                            total_f = sum(floored.values())
+                            return {cid: w_val / total_f for cid, w_val in floored.items()}
+
+
+                        weights = _cluster_weights(client_ids)
+                        w_str = " ".join(f"c{c}:{w:.2f}" for c, w in weights.items())
+                        print(f"  Group {cluster_id} ({n_clients} clients): raFLoRA  weights=[{w_str}]", flush=True)
                         per_client: Dict[int, Dict[str, torch.Tensor]] = {
                             cid: {} for cid in client_ids
                         }
@@ -1948,7 +2149,7 @@ class ATLASIntegratedTrainer:
                             tensors = {
                                 cid: client_states[cid][key]
                                 for cid in client_ids
-                                if key in client_states[cid]
+                                if cid in client_states and key in client_states[cid]
                             }
                             if not tensors:
                                 continue
@@ -1965,8 +2166,9 @@ class ATLASIntegratedTrainer:
                                 ranks = {cid: t.shape[rank_dim] for cid, t in tensors.items()}
                                 max_rank = max(ranks.values())
 
-                                # Build averaged max-rank template slice-by-slice.
-                                # Slice r: only clients with rank > r contribute.
+                                # Build performance-weighted max-rank template slice-by-slice.
+                                # Slice r: only clients with rank > r contribute (raFLoRA).
+                                # Contribution is weighted by previous-round canonical score.
                                 if is_lora_a:
                                     hidden = next(iter(tensors.values())).shape[1]
                                     template = torch.zeros(
@@ -1975,14 +2177,17 @@ class ATLASIntegratedTrainer:
                                         device=next(iter(tensors.values())).device,
                                     )
                                     for r in range(max_rank):
-                                        contrib = [
-                                            t.float() for cid2, t in tensors.items()
+                                        contrib = {
+                                            cid2: t.float()
+                                            for cid2, t in tensors.items()
                                             if ranks[cid2] > r
-                                        ]
+                                        }
                                         if contrib:
-                                            template[r:r+1, :] = torch.stack(
-                                                [c[r:r+1, :] for c in contrib]
-                                            ).mean(0)
+                                            w_sum = sum(weights.get(c, 1.0) for c in contrib)
+                                            template[r:r+1, :] = sum(
+                                                weights.get(c, 1.0) / w_sum * v[r:r+1, :]
+                                                for c, v in contrib.items()
+                                            )
                                 else:  # lora_b
                                     hidden = next(iter(tensors.values())).shape[0]
                                     template = torch.zeros(
@@ -1991,14 +2196,17 @@ class ATLASIntegratedTrainer:
                                         device=next(iter(tensors.values())).device,
                                     )
                                     for r in range(max_rank):
-                                        contrib = [
-                                            t.float() for cid2, t in tensors.items()
+                                        contrib = {
+                                            cid2: t.float()
+                                            for cid2, t in tensors.items()
                                             if ranks[cid2] > r
-                                        ]
+                                        }
                                         if contrib:
-                                            template[:, r:r+1] = torch.stack(
-                                                [c[:, r:r+1] for c in contrib]
-                                            ).mean(0)
+                                            w_sum = sum(weights.get(c, 1.0) for c in contrib)
+                                            template[:, r:r+1] = sum(
+                                                weights.get(c, 1.0) / w_sum * v[:, r:r+1]
+                                                for c, v in contrib.items()
+                                            )
 
                                 # Each client receives its OWN r_k-slice of the template.
                                 # This retains personalization: high-rank clients keep their
@@ -2015,25 +2223,29 @@ class ATLASIntegratedTrainer:
 
                             elif len(set(v for v in shapes.values())) == 1:
                                 # Same-shape non-LoRA param (e.g. classifier head, bias).
-                                # Average is correct within a task-pure cluster.
-                                avg = torch.stack(
-                                    [t.float() for t in tensors.values()]
-                                ).mean(0)
+                                # Performance-weighted average within a task-pure cluster.
+                                w_sum = sum(weights.get(c, 1.0) for c in tensors)
+                                avg = sum(
+                                    weights.get(c, 1.0) / w_sum * t.float()
+                                    for c, t in tensors.items()
+                                )
                                 for cid in client_ids:
                                     if cid in tensors:
                                         per_client[cid][key] = avg.to(tensors[cid].dtype)
 
                             else:
-                                # Non-LoRA param with shape mismatch: min-slice average,
-                                # then pad back to each client's original shape.
+                                # Non-LoRA param with shape mismatch: min-slice weighted
+                                # average, then pad back to each client's original shape.
                                 ndim = len(next(iter(tensors.values())).shape)
                                 min_shape = tuple(
                                     min(shapes[c][d] for c in tensors) for d in range(ndim)
                                 )
                                 slices = tuple(slice(0, s) for s in min_shape)
-                                avg_min = torch.stack(
-                                    [t[slices].float() for t in tensors.values()]
-                                ).mean(0)
+                                w_sum = sum(weights.get(c, 1.0) for c in tensors)
+                                avg_min = sum(
+                                    weights.get(c, 1.0) / w_sum * t[slices].float()
+                                    for c, t in tensors.items()
+                                )
                                 for cid in client_ids:
                                     if cid not in tensors:
                                         continue
@@ -2068,12 +2280,26 @@ class ATLASIntegratedTrainer:
                                     pass
 
                 # Compute download bytes: trainable param sizes returned to each client.
+                # Also record lora_upload: LoRA-only param sizes uploaded for aggregation.
+                _lora_only_kw = ['lora', 'classifier', 'score']
                 for cid in aggregated_flat:
                     comm_download[cid] = sum(
                         int(t.numel() * t.element_size())
                         for k, t in aggregated_flat[cid].items()
                         if any(kw in k.lower() for kw in trainable_kw)
                     )
+                    if lora_upload.get(cid, 0) == 0:  # not already set (e.g., non-split modes)
+                        _use_quant = getattr(self.config, 'quant_lora_comm', True)
+                        lora_upload[cid] = sum(
+                            int(int8_bytes(p) if is_lora_param(n) and _use_quant
+                                else p.numel() * p.element_size())
+                            for n, p in client_models[cid].named_parameters()
+                            if any(kw in n.lower() for kw in _lora_only_kw)
+                        )
+                        # Non-split mode (e.g., fedavg_cluster): comm_upload is the
+                        # LoRA weights sent to the cluster server for FedAvg aggregation,
+                        # directly comparable to standard_fl's reported upload.
+                        comm_upload[cid] = lora_upload[cid]
 
                 # ── Step 4: NO cross-client server sync ───────────────────────────────
                 # Each client has its own dedicated server.  The sync_to_client call
@@ -2092,6 +2318,8 @@ class ATLASIntegratedTrainer:
             round_accuracies = {}
             round_f1s = {}
             round_canonical = {}
+            round_test_losses = {}
+            round_ppl = {}
             
             for client_data in self.clients_data:
                 cid = client_data.client_id
@@ -2107,7 +2335,18 @@ class ATLASIntegratedTrainer:
                 round_accuracies[cid] = acc
                 round_f1s[cid] = f1
                 round_canonical[cid] = canonical
-                print(f"  Client {cid} ({client_data.task_name}): acc={acc:.4f}, f1={f1:.4f}, canonical={canonical:.4f}, loss={loss:.4f}", flush=True)
+                round_test_losses[cid] = loss
+                # PPL = exp(loss) — works for classification (cross-entropy) and causal LM
+                round_ppl[cid] = float(np.exp(min(loss, 100.0)))
+
+                # E2E uses dummy label=0 → acc/f1/canonical are meaningless; only show loss/ppl
+                if client_data.task_name == 'e2e':
+                    round_accuracies[cid] = None
+                    round_f1s[cid]        = None
+                    round_canonical[cid]  = None
+                    print(f"  Client {cid} ({client_data.task_name}): loss={loss:.4f}, ppl={round_ppl[cid]:.2f}  [acc/f1 suppressed — dummy labels]", flush=True)
+                else:
+                    print(f"  Client {cid} ({client_data.task_name}): acc={acc:.4f}, f1={f1:.4f}, canonical={canonical:.4f}, loss={loss:.4f}, ppl={round_ppl[cid]:.2f}", flush=True)
 
                 # Move model back to CPU after evaluation
                 try:
@@ -2123,14 +2362,21 @@ class ATLASIntegratedTrainer:
             # Calculate communication totals for this round
             round_upload_total = sum(comm_upload.values())
             round_download_total = sum(comm_download.values())
+            round_lora_upload_total = sum(lora_upload.values())
             results['communication_costs']['total_bytes_uploaded'] += round_upload_total
             results['communication_costs']['total_bytes_downloaded'] += round_download_total
+            results['communication_costs']['total_lora_upload_bytes'] = (
+                results['communication_costs'].get('total_lora_upload_bytes', 0)
+                + round_lora_upload_total
+            )
             results['communication_costs']['per_round'].append({
                 'round': round_idx + 1,
                 'upload_bytes': comm_upload,
                 'download_bytes': comm_download,
+                'lora_upload_bytes': lora_upload,            # model-update bytes only
                 'total_upload': round_upload_total,
-                'total_download': round_download_total
+                'total_download': round_download_total,
+                'total_lora_upload': round_lora_upload_total # comparable across methods
             })
             results['time_metrics']['per_round'].append({
                 'round': round_idx + 1,
@@ -2141,9 +2387,12 @@ class ATLASIntegratedTrainer:
             results['round_metrics'].append({
                 'round': round_idx + 1,
                 'train_losses': round_losses,
+                'test_losses': round_test_losses,
                 'test_accuracies': round_accuracies,
                 'test_f1': round_f1s,
-                'avg_accuracy': np.mean(list(round_accuracies.values())),
+                'test_ppl': round_ppl,
+                'avg_accuracy': float(np.mean([v for v in round_accuracies.values() if v is not None])),
+                'avg_ppl': float(np.mean(list(round_ppl.values()))),
                 'time_seconds': round_time,
                 'comm_upload_bytes': comm_upload,
                 'comm_download_bytes': comm_download
@@ -2152,14 +2401,18 @@ class ATLASIntegratedTrainer:
             # Per-task summary for this round
             task_canonical_round: Dict[str, List[float]] = {}
             for cd in self.clients_data:
-                task_canonical_round.setdefault(cd.task_name, []).append(round_canonical[cd.client_id])
+                v = round_canonical[cd.client_id]
+                if v is not None:   # skip e2e dummy-label clients
+                    task_canonical_round.setdefault(cd.task_name, []).append(v)
             task_summary = "  |  ".join(
                 f"{t}: {np.mean(v):.4f}" for t, v in sorted(task_canonical_round.items())
             )
+            _valid_acc = [v for v in round_accuracies.values() if v is not None]
+            _valid_can = [v for v in round_canonical.values() if v is not None]
             print(f"\n[Round {round_idx+1}] SUMMARY", flush=True)
-            print(f"  Per-task canonical  : {task_summary}", flush=True)
-            print(f"  Macro avg accuracy  : {np.mean(list(round_accuracies.values())):.4f}", flush=True)
-            print(f"  Macro avg canonical : {np.mean(list(round_canonical.values())):.4f}", flush=True)
+            print(f"  Per-task canonical  : {task_summary}  [e2e excluded — dummy labels]", flush=True)
+            print(f"  Macro avg accuracy  : {np.mean(_valid_acc):.4f}  (real tasks only)", flush=True)
+            print(f"  Macro avg canonical : {np.mean(_valid_can):.4f}  (real tasks only)", flush=True)
             print(f"  Round time          : {round_time:.1f}s", flush=True)
             print(f"  Communication       : ↑{round_upload_total/1e6:.2f}MB ↓{round_download_total/1e6:.2f}MB", flush=True)
             
@@ -2182,17 +2435,46 @@ class ATLASIntegratedTrainer:
                 self._save_checkpoint(round_idx + 1, checkpoint_state)
         
         # ── Final summary metrics (last round) ───────────────────────────
-        results['final_accuracies'] = {int(k): float(v) for k, v in round_accuracies.items()}
-        results['final_canonical']  = {int(k): float(v) for k, v in round_canonical.items()}
-        results['final_f1']         = {int(k): float(v) for k, v in round_f1s.items()}
+        results['final_accuracies'] = {int(k): (float(v) if v is not None else None) for k, v in round_accuracies.items()}
+        results['final_canonical']  = {int(k): (float(v) if v is not None else None) for k, v in round_canonical.items()}
+        results['final_f1']         = {int(k): (float(v) if v is not None else None) for k, v in round_f1s.items()}
+        results['final_test_losses'] = {int(k): float(v) for k, v in round_test_losses.items()}
+        results['final_ppl']         = {int(k): float(v) for k, v in round_ppl.items()}
+        # Graceful weak-device failure summary (non-empty only for fedavg_cluster / standard_fl)
+        results['weak_device_dropped'] = {int(cid): int(cnt) for cid, cnt in skipped_all_rounds.items()}
+        results['weak_device_dropped_total_rounds'] = int(sum(skipped_all_rounds.values()))
+
+        # ── Efficiency metrics: trainable params per client ───────────────
+        from metrics import count_trainable_params, capture_memory_stats, find_convergence_round
+        trainable_params_info = {}
+        for cid, model in client_models.items():
+            try:
+                trainable_params_info[int(cid)] = count_trainable_params(model)
+            except Exception:
+                pass
+        results['trainable_params'] = trainable_params_info
+
+        # ── Peak memory snapshot ──────────────────────────────────────────
+        results['memory_stats'] = capture_memory_stats(self.device)
+
+        # ── Convergence tracking ──────────────────────────────────────────
+        round_avg_accuracies = [rm['avg_accuracy'] for rm in results['round_metrics']]
+        round_avg_ppls = [rm.get('avg_ppl', 0.0) for rm in results['round_metrics']]
+        results['convergence'] = {
+            'accuracy_convergence_round': find_convergence_round(
+                round_avg_accuracies, mode='max', threshold_frac=0.95),
+            'ppl_convergence_round': find_convergence_round(
+                round_avg_ppls, mode='min', threshold_frac=0.95) if any(p > 0 for p in round_avg_ppls) else None,
+            'total_wall_clock_seconds': time.time() - start_time,
+        }
 
         # Per-task final scores (the proof that ATLAS preserves task identity)
         final_task_canonical: Dict[str, List[float]] = {}
         for cd in self.clients_data:
             tname = cd.task_name
-            final_task_canonical.setdefault(tname, []).append(
-                round_canonical.get(cd.client_id, 0.0)
-            )
+            v = round_canonical.get(cd.client_id)
+            if v is not None:   # skip e2e dummy-label clients
+                final_task_canonical.setdefault(tname, []).append(v)
         results['final_task_scores'] = {
             tname: {
                 'metric':     self.TASK_METRIC.get(tname, 'accuracy'),
@@ -2206,12 +2488,60 @@ class ATLASIntegratedTrainer:
             v['mean'] for v in results['final_task_scores'].values()
         ]))
         results['personalization_spread'] = float(np.std(
-            list(results['final_canonical'].values())
+            [v for v in results['final_canonical'].values() if v is not None]
         ))
+
+        # ── Personalization analysis ──────────────────────────────────────
+        # Within-task diversity: std of canonical metric across clients within
+        # the same task cluster.  Standard FL forces this to 0 (identical models
+        # after FedAvg).  ATLAS allows per-client adaptation → std > 0.
+        wt_stds: List[float] = []
+        wt_ranges: Dict[str, Dict] = {}
+        for tname, info in results['final_task_scores'].items():
+            vals = info['per_client']
+            std  = float(np.std(vals))
+            wt_stds.append(std)
+            wt_ranges[tname] = {
+                'within_task_std':  std,
+                'best_client':      float(max(vals)),
+                'worst_client':     float(min(vals)),
+                'range':            float(max(vals) - min(vals)),
+            }
+        results['personalization'] = {
+            'within_task_details':    wt_ranges,
+            'avg_within_task_std':    float(np.mean(wt_stds)),
+            'max_within_task_std':    float(np.max(wt_stds)) if wt_stds else 0.0,
+            'global_client_std':      results['personalization_spread'],
+            # Interpretation: higher avg_within_task_std means more personalization.
+            # Standard FL → avg_within_task_std ≈ 0 (FedAvg collapses all clients).
+            # ATLAS        → avg_within_task_std > 0 (LoRA adapters diverge per device).
+        }
         results['total_comm_mb'] = (
             results['communication_costs']['total_bytes_uploaded'] +
             results['communication_costs']['total_bytes_downloaded']
         ) / 1e6
+        # LoRA-weight-only communication (the paper's primary comparison metric).
+        # Excludes split-learning activation exchange overhead so ATLAS vs
+        # standard_fl comparisons are apples-to-apples on model-update bandwidth.
+        # When quant_lora_comm=True, lora_upload bytes were already counted at INT8
+        # cost (1 byte/elem + scale), so lora_weight_comm_mb reflects the actual
+        # wire bandwidth.  We also store the FP32 equivalent for reporting the
+        # compression gain in the paper.
+        results['lora_weight_comm_mb'] = (
+            results['communication_costs'].get('total_lora_upload_bytes', 0) +
+            results['communication_costs']['total_bytes_downloaded']
+        ) / 1e6
+        _quant_enabled = getattr(self.config, 'quant_lora_comm', True)
+        if _quant_enabled:
+            # FP32 equivalent: bytes × 4 (INT8 1 byte vs FP32 4 bytes per element).
+            # Scale overhead is <1% → ignored for the approximation.
+            results['lora_weight_comm_fp32_mb']  = results['lora_weight_comm_mb'] * 4.0
+            results['lora_comm_compression_ratio'] = 4.0
+            results['quant_lora_comm'] = True
+        else:
+            results['lora_weight_comm_fp32_mb']  = results['lora_weight_comm_mb']
+            results['lora_comm_compression_ratio'] = 1.0
+            results['quant_lora_comm'] = False
 
         # Print proof-of-ATLAS summary
         print(f"\n{'='*70}")
@@ -2221,7 +2551,21 @@ class ATLASIntegratedTrainer:
             print(f"  {tname:6s}: {info['metric']}={info['mean']:.4f} ± {info['std']:.4f}")
         print(f"  Macro avg canonical : {results['macro_avg_canonical']:.4f}")
         print(f"  Personalization spread (std across clients): {results['personalization_spread']:.4f}")
-        print(f"  Total communication : {results['total_comm_mb']:.1f} MB")
+        _pers = results.get('personalization', {})
+        print(f"  Avg within-task std  (personaliz. measure): {_pers.get('avg_within_task_std', 0.0):.4f}")
+        for _tname, _wt in _pers.get('within_task_details', {}).items():
+            print(f"    {_tname:6s}: within-task std={_wt['within_task_std']:.4f}  "
+                  f"range=[{_wt['worst_client']:.4f}, {_wt['best_client']:.4f}]")
+        _quant_on   = results.get('quant_lora_comm', False)
+        _lora_mb    = results['lora_weight_comm_mb']
+        _fp32_mb    = results.get('lora_weight_comm_fp32_mb', _lora_mb)
+        _ratio      = results.get('lora_comm_compression_ratio', 1.0)
+        if _quant_on:
+            print(f"  Total communication : {results['total_comm_mb']:.1f} MB  "
+                  f"(LoRA-update INT8: {_lora_mb:.1f} MB | FP32 equiv: {_fp32_mb:.1f} MB | {_ratio:.1f}\u00d7 reduction)")
+        else:
+            print(f"  Total communication : {results['total_comm_mb']:.1f} MB  "
+                  f"(LoRA-update only: {_lora_mb:.1f} MB)")
         print(f"{'='*70}\n")
 
         try:
@@ -2414,8 +2758,27 @@ class ATLASIntegratedTrainer:
         # ---- Qwen2 / LLaMA ----
         if hasattr(base, 'model') and hasattr(base.model, 'embed_tokens'):
             x = base.model.embed_tokens(input_ids)
+            seq_len = input_ids.size(1)
+            position_ids = torch.arange(seq_len, dtype=torch.long, device=input_ids.device).unsqueeze(0)
+            # Qwen2.5 / LLaMA: rotary embeddings are pre-computed at model level
+            # and passed as position_embeddings=(cos, sin) to each decoder layer.
+            # Without this, the internal cos/sin unpack raises NoneType error.
+            position_embeddings = None
+            if hasattr(base.model, 'rotary_emb'):
+                position_embeddings = base.model.rotary_emb(x, position_ids)
+            # _update_causal_mask 3rd arg is cache_position (shape [seq]), not position_ids.
+            if hasattr(base.model, '_update_causal_mask'):
+                cache_position = torch.arange(seq_len, device=input_ids.device)
+                causal_mask = base.model._update_causal_mask(
+                    attention_mask, x, cache_position,
+                    None,   # past_key_values
+                    False,  # output_attentions
+                )
+            else:
+                causal_mask = None
             for layer in base.model.layers[:split_layer]:
-                out = layer(x)
+                out = layer(x, attention_mask=causal_mask, position_ids=position_ids,
+                            position_embeddings=position_embeddings)
                 x = out[0] if isinstance(out, tuple) else out
             return x  # (batch, seq_len, hidden)
 
@@ -2476,7 +2839,7 @@ class ATLASIntegratedTrainer:
             # Fix 31: compute class-balanced loss weights from the cluster's training data.
             # Collects all labels across every client in the cluster, then applies
             # sklearn-style "balanced" weighting: w_c = N / (C * n_c).
-            # This prevents imbalanced tasks (e.g. CoLA: 69% class-1) from collapsing
+            # This prevents imbalanced tasks (e.g. MRPC: 68% class-1) from collapsing
             # to the trivial majority-class prediction (MCC=0, acc=0.69).
             class_weights_tensor: Optional[torch.Tensor] = None
             try:
@@ -2556,7 +2919,7 @@ class ATLASIntegratedTrainer:
 
             server_wrapper.to(self.device)
             optimizer = torch.optim.AdamW(
-                server_wrapper.parameters(), lr=self.config.learning_rate
+                server_wrapper.parameters(), lr=self.config.learning_rate, weight_decay=0.01
             )
 
             server_models[cluster_id] = {
@@ -2582,6 +2945,7 @@ class ATLASIntegratedTrainer:
         client_id: int,
         task_name: str,
         client_lora_opt_states: Optional[Dict] = None,
+        round_lr: Optional[float] = None,
     ):
         """
         Genuine split federated learning training step for one client.
@@ -2612,9 +2976,12 @@ class ATLASIntegratedTrainer:
         # 1e-4 – 3e-4 for LoRA).  The original code used the same 3e-5 as
         # the server, which — combined with gradient sparsification — made
         # client-side learning negligible.
-        _client_lr = max(self.config.learning_rate * 5, 2e-4)
+        # Use per-round decayed LR (if provided), otherwise fall back to config lr.
+        # Client LoRA adapters need 5× the server lr (Hu et al., 2022).
+        _effective_lr = round_lr if round_lr is not None else self.config.learning_rate
+        _client_lr = max(_effective_lr * 5, _effective_lr * 2)
         _lora_params = [p for p in client_model.parameters() if p.requires_grad]
-        client_optimizer = torch.optim.AdamW(_lora_params, lr=_client_lr)
+        client_optimizer = torch.optim.AdamW(_lora_params, lr=_client_lr, weight_decay=0.01)
 
         # Fix 27: Restore per-client LoRA optimizer state if available.
         # Without this, Adam momentum/variance are discarded at the end of
@@ -2624,6 +2991,9 @@ class ATLASIntegratedTrainer:
         if client_lora_opt_states is not None and client_id in client_lora_opt_states:
             try:
                 client_optimizer.load_state_dict(client_lora_opt_states[client_id])
+                # Update lr to current round's decayed value after state restore.
+                for _pg in client_optimizer.param_groups:
+                    _pg['lr'] = _client_lr
             except Exception:
                 pass  # shape mismatch after rank change → use fresh state
 
@@ -2732,19 +3102,21 @@ class ATLASIntegratedTrainer:
                 total_loss += loss.item()
                 num_batches += 1
 
-                # Live progress line (overwrite in-place every 5 batches)
-                if num_batches % 5 == 0 or num_batches == 1:
-                    running_loss = total_loss / num_batches
-                    elapsed = time.time() - _client_start
-                    eta = (elapsed / num_batches) * (total_batches_est - num_batches)
-                    print(
-                        f"\r    Client {client_id} [{task_name}] "
-                        f"ep{_epoch+1}/{self.config.local_epochs} "
-                        f"batch {num_batches}/{total_batches_est} "
-                        f"loss={running_loss:.4f} "
-                        f"eta={eta:.0f}s",
-                        end="", flush=True
-                    )
+                # Live progress line — only when running interactively (TTY)
+                if sys.stdout.isatty():
+                    _log_interval = 25
+                    if num_batches % _log_interval == 0 or num_batches == 1:
+                        running_loss = total_loss / num_batches
+                        elapsed = time.time() - _client_start
+                        eta = (elapsed / num_batches) * (total_batches_est - num_batches)
+                        print(
+                            f"\r    Client {client_id} [{task_name}] "
+                            f"ep{_epoch+1}/{self.config.local_epochs} "
+                            f"batch {num_batches}/{total_batches_est} "
+                            f"loss={running_loss:.4f} "
+                            f"eta={eta:.0f}s",
+                            end="", flush=True
+                        )
 
                 # Free GPU memory after each batch
                 del input_ids, attention_mask, labels, split_activations
@@ -2781,17 +3153,43 @@ class ATLASIntegratedTrainer:
 
         return avg_loss, total_upload_bytes, total_download_bytes
 
+    def _is_weak_device_overloaded(self, client_id: int, device_configs: Dict) -> bool:
+        """Return True if a client's assigned LoRA ranks exceed its device capability ceiling.
+
+        Used only for fedavg_cluster and standard_fl modes, which assign a homogeneous
+        (uniform) rank to every client regardless of hardware tier.  ATLAS avoids this
+        problem via Phase-2 heterogeneous rank allocation.
+
+        A client is flagged when:
+          - Its device profile has memory_mb <= 2048 (smartphone / weak tier), AND
+          - The maximum assigned LoRA rank exceeds the device's suggested_ranks ceiling.
+        """
+        cfg = device_configs.get(client_id)
+        if cfg is None:
+            return False
+        profile = cfg.get('device_profile', {})
+        if profile.get('memory_mb', 99999) > 2048:   # Only flag weak (<=2 GB) devices
+            return False
+        suggested_max = max(profile.get('suggested_ranks', [64]))
+        lora_ranks = cfg.get('lora_ranks', [])
+        if not lora_ranks:
+            return False
+        assigned_max = max(lora_ranks) if isinstance(lora_ranks, (list, tuple)) else int(lora_ranks)
+        return assigned_max > suggested_max
+
     def _train_client_local(
         self, 
         model: nn.Module, 
         dataset: Subset,
         client_id: int,
-        task_name: str
+        task_name: str,
+        round_lr: Optional[float] = None,
     ) -> float:
         """Train one client locally (Phase 3)"""
         model.train()
         dataloader = DataLoader(dataset, batch_size=self.config.batch_size, shuffle=True)
-        optimizer = torch.optim.AdamW(model.parameters(), lr=self.config.learning_rate)
+        _effective_lr = round_lr if round_lr is not None else self.config.learning_rate
+        optimizer = torch.optim.AdamW(model.parameters(), lr=_effective_lr, weight_decay=0.01)
         
         total_loss = 0.0
         num_batches = 0
@@ -2831,19 +3229,21 @@ class ATLASIntegratedTrainer:
                 total_loss += loss.item()
                 num_batches += 1
 
-                # Live progress line (overwrite in-place every 5 batches)
-                if num_batches % 5 == 0 or num_batches == 1:
-                    running_loss = total_loss / num_batches
-                    elapsed = time.time() - _client_start
-                    eta = (elapsed / num_batches) * (total_batches_est - num_batches)
-                    print(
-                        f"\r    Client {client_id} [{task_name}] "
-                        f"ep{epoch+1}/{self.config.local_epochs} "
-                        f"batch {num_batches}/{total_batches_est} "
-                        f"loss={running_loss:.4f} "
-                        f"eta={eta:.0f}s",
-                        end="", flush=True
-                    )
+                # Live progress line — only when running interactively (TTY)
+                if sys.stdout.isatty():
+                    _log_interval = 25
+                    if num_batches % _log_interval == 0 or num_batches == 1:
+                        running_loss = total_loss / num_batches
+                        elapsed = time.time() - _client_start
+                        eta = (elapsed / num_batches) * (total_batches_est - num_batches)
+                        print(
+                            f"\r    Client {client_id} [{task_name}] "
+                            f"ep{epoch+1}/{self.config.local_epochs} "
+                            f"batch {num_batches}/{total_batches_est} "
+                            f"loss={running_loss:.4f} "
+                            f"eta={eta:.0f}s",
+                            end="", flush=True
+                        )
         
         avg_loss = total_loss / max(num_batches, 1)
         elapsed_total = time.time() - _client_start
@@ -2856,8 +3256,8 @@ class ATLASIntegratedTrainer:
     TASK_METRIC: Dict[str, str] = {
         'sst2': 'accuracy',
         'mrpc': 'f1',
-        'cola': 'matthews',
         'qnli': 'accuracy',
+        'e2e':  'accuracy',
     }
 
     def _evaluate_client(
@@ -2875,8 +3275,7 @@ class ATLASIntegratedTrainer:
             f1        (float) – macro-F1
             canonical (float) – the task's *primary* metric used in the paper:
                                  accuracy for SST-2 / QNLI,
-                                 F1        for MRPC,
-                                 Matthews  for CoLA
+                                 F1        for MRPC
         """
         from sklearn.metrics import matthews_corrcoef
 
@@ -3064,8 +3463,8 @@ if __name__ == "__main__":
     # NEW: Model and task configuration for publication experiments
     parser.add_argument("--model", type=str, default="distilbert-base-uncased",
                        help="Model to use: distilbert, gpt2, gpt2-xl, qwen2.5")
-    parser.add_argument("--tasks", type=str, nargs="+", default=['sst2', 'mrpc', 'cola'],
-                       help="Tasks to use (space-separated): sst2 mrpc cola qnli mnli")
+    parser.add_argument("--tasks", type=str, nargs="+", default=['sst2', 'mrpc', 'qnli'],
+                       help="Tasks to use (space-separated): sst2 mrpc qnli e2e")
     parser.add_argument("--clients-per-task", type=int, default=3,
                        help="Number of clients per task")
     parser.add_argument("--samples", type=int, help="Override max_samples_per_client")
@@ -3146,7 +3545,6 @@ if __name__ == "__main__":
         )
     else:
         # Full experiment: Publication-quality parameters
-        print("[MODE] Full experiment - 10 rounds in one shot")
         config = ATLASConfig(
             model_name=model_repo,
             tasks=args.tasks,
@@ -3275,13 +3673,16 @@ if __name__ == "__main__":
                 # ── Key proof-of-ATLAS metrics ──────────────────────────────────
                 # Each task's canonical metric (acc / F1 / Matthews) averaged over
                 # clients that share that task.  Compare across ablation modes to
-                # show ATLAS outperforms standard_fl on minority tasks (e.g. CoLA).
+                # show ATLAS outperforms standard_fl on minority tasks (e.g. MRPC).
                 'final_task_scores':       _to_jsonable(results.get('final_task_scores', {})),
                 'macro_avg_canonical':     _to_jsonable(results.get('macro_avg_canonical', 0.0)),
                 # Low spread → clients in same task have converged (personalization worked)
                 'personalization_spread':  _to_jsonable(results.get('personalization_spread', 0.0)),
+                # Detailed personalization analysis: within-task std, range per task
+                'personalization':         _to_jsonable(results.get('personalization', {})),
                 # Total bytes exchanged across ALL rounds (split activation + LoRA uploads)
                 'total_comm_mb':           _to_jsonable(results.get('total_comm_mb', 0.0)),
+                'lora_weight_comm_mb':     _to_jsonable(results.get('lora_weight_comm_mb', 0.0)),
                 # ── Phase information ───────────────────────────────────────────
                 'cluster_labels':          _to_jsonable(results.get('cluster_labels', {})),
                 'phase1_clustering':       _to_jsonable(results.get('phase1_clustering', {})),
@@ -3291,9 +3692,24 @@ if __name__ == "__main__":
                 'fingerprints':            _to_jsonable(results.get('fingerprints', {})),
                 'clustering_metrics':      _to_jsonable(results.get('clustering_metrics', {})),
                 'device_configs':          _to_jsonable(results.get('device_configs', {})),
+                'split_assignments':        _to_jsonable({
+                    str(cid): cfg.get('split_layer')
+                    for cid, cfg in results.get('device_configs', {}).items()
+                }),
                 'layer_importances':       _to_jsonable(results.get('layer_importances', {})),
                 'run_metadata':            _to_jsonable(results.get('run_metadata', {})),
+                # ── New: efficiency & convergence metrics ───────────────────────
+                'final_test_losses':       _to_jsonable(results.get('final_test_losses', {})),
+                'final_ppl':               _to_jsonable(results.get('final_ppl', {})),
+                'trainable_params':        _to_jsonable(results.get('trainable_params', {})),
+                'memory_stats':            _to_jsonable(results.get('memory_stats', {})),
+                'convergence':             _to_jsonable(results.get('convergence', {})),
                 'config':                  asdict(config),
+                # ── Graceful weak-device failure (fedavg_cluster / standard_fl) ─
+                # Maps client_id → number of rounds skipped due to capacity overload.
+                # Empty dict ({}) for ATLAS / atlas_no_laplacian runs.
+                'weak_device_dropped':                _to_jsonable(results.get('weak_device_dropped', {})),
+                'weak_device_dropped_total_rounds':   _to_jsonable(results.get('weak_device_dropped_total_rounds', 0)),
             }
             json.dump(results_json, f, indent=2)
         

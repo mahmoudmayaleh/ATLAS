@@ -1,0 +1,64 @@
+ssh mayale_m@163.173.228.93
+
+nvidia-smi
+
+source ~/atlas_env/bin/activate
+
+conda activate atlas_py310
+
+watch -n 1 nvidia-smi
+
+
+
+git pull --rebase origin main
+git push origin main --force-with-lease
+
+export CUDA_VISIBLE_DEVICES=0
+export CUDA_VISIBLE_DEVICES=1
+
+chmod +x ./gpu0_seed42.sh
+chmod +x ./gpu1_seed123.sh
+
+./gpu0_seed42.sh distilbert-base-uncased atlas ✔️
+./gpu0_seed42.sh distilbert-base-uncased atlas_no_laplacian ✔️
+./gpu0_seed42.sh distilbert-base-uncased fedavg_cluster ✔️
+./gpu0_seed42.sh distilbert-base-uncased standard_fl ✔️
+
+-------------------------------------------
+ v 
+# DistilBERT — 3 seeds
+./gpu0_seed42.sh distilbert-base-uncased atlas ✔️
+./gpu0_seed42.sh distilbert-base-uncased standard_fl ✔️
+./gpu1_seed123.sh distilbert-base-uncased atlas ️️✔️
+./gpu1_seed123.sh distilbert-base-uncased standard_fl ✔️
+./gpu2_seed456.sh distilbert-base-uncased atlas ✔️
+./gpu2_seed456.sh distilbert-base-uncased standard_fl ✔️
+
+# GPT-2 — 3 seeds 
+./gpu0_seed42.sh gpt2 atlas ✔️
+./gpu0_seed42.sh gpt2 standard_fl ✔️
+./gpu0_seed42.sh gpt2 fedavg_cluster ✔️
+./gpu0_seed42.sh gpt2 atlas_no_laplacian ✔️
+./gpu1_seed123.sh gpt2 atlas ✔️
+./gpu1_seed123.sh gpt2 standard_fl ✔️
+./gpu2_seed456.sh gpt2 atlas ✔️
+./gpu2_seed456.sh gpt2 standard_fl ✔️
+
+# qwen2.5 — 3 seeds
+./gpu0_seed42.sh Qwen/Qwen2.5-0.5B atlas ✔️
+./gpu0_seed42.sh Qwen/Qwen2.5-0.5B standard_fl ✔️
+./gpu1_seed123.sh Qwen/Qwen2.5-0.5B atlas ✔️
+./gpu1_seed123.sh Qwen/Qwen2.5-0.5B standard_fl ✔️
+./gpu2_seed456.sh Qwen/Qwen2.5-0.5B atlas ✔️
+./gpu2_seed456.sh Qwen/Qwen2.5-0.5B standard_fl ✔️
+
+
+# SplitLoRA comparison (homo)
+python experiments/run_e2e_nlg.py --model gpt2 --clients 5 --rounds 15 --setting homo --ablation atlas ✔️
+python experiments/run_e2e_nlg.py --model gpt2 --clients 5 --rounds 15 --setting homo --ablation standard_fl ✔️
+python experiments/run_e2e_nlg.py --model gpt2 --clients 5 --rounds 15 --setting homo --ablation local_only✔️
+
+# HSplitLoRA comparison (hetero)
+python experiments/run_e2e_nlg.py --model gpt2 --clients 5 --rounds 15 --setting hetero --ablation atlas✔️
+python experiments/run_e2e_nlg.py --model gpt2 --clients 5 --rounds 15 --setting hetero --ablation standard_fl✔️
+python experiments/run_e2e_nlg.py --model gpt2 --clients 5 --rounds 15 --setting hetero --ablation local_only✔️

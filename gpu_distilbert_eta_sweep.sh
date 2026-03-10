@@ -19,7 +19,7 @@ MODEL="distilbert-base-uncased"
 METHOD=${1:-atlas}
 SEED=42
 MODEL_NORMALIZED="${MODEL//\//_}"
-TASKS=(sst2 mrpc cola qnli)
+TASKS=(sst2 mrpc qnli)
 CLIENTS_PER_TASK=3
 ROUNDS=10
 
