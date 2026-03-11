@@ -7,6 +7,9 @@
 \usepackage{algorithm}
 \usepackage{algpseudocode}
 \usepackage{hyperref}
+\usepackage{dblfloatfix}
+
+\graphicspath{{results/}}
 
 \begin{document}
 
@@ -27,11 +30,9 @@ Email: zakaria.abouelhouda@inrs.ca}
 \maketitle
 
 \begin{abstract}
-Federated learning (FL) enables on-device adaptation of large language models (LLMs) without centralizing sensitive data, yet practical deployment on heterogeneous edge devices is challenged by task diversity, resource constraints, and high communication overhead. Naïve task-agnostic aggregation (e.g., FedAvg) and uniform-rank low-rank adaptation (LoRA) may suffer from negative transfer, suboptimal personalization, and inefficient utilization of device budgets.
+Federated learning (FL) can adapt large language models (LLMs) without centralizing private data, but deployment on heterogeneous edge clients is constrained by task diversity, device variability, and communication cost. Standard task-agnostic aggregation and uniform-rank low-rank adaptation (LoRA) often cause negative transfer and poor resource matching.
 
-This paper presents \textbf{ATLAS}, an adaptive task-aware FL framework for parameter-efficient fine-tuning of transformer-based LLMs on heterogeneous clients. The current ATLAS architecture integrates four phases: (i) representation-based task discovery using compact frozen-backbone fingerprints and multi-metric cluster selection, (ii) device- and data-aware heterogeneous LoRA rank allocation under explicit memory budgets, (iii) state-consistent split federated learning with adaptive split selection and dual-path cluster aggregation, and (iv) MIRA-style LoRA-only Laplacian regularization over a block-diagonal task graph together with communication-efficient INT8 LoRA exchange and FP32 server-side computation~\cite{mira,splitfed,llm_int8,qlora,zeroquant,smoothquant}.
-
-We implement ATLAS in an end-to-end pipeline and evaluate it on a heterogeneous GLUE federation with three tasks, nine clients, and three transformer backbones~\cite{glue}. Across DistilBERT, GPT-2, and Qwen-2.5-0.5B, ATLAS improves macro-average accuracy over standard FedAvg by 16.18, 24.83, and 6.86 percentage points, respectively, while reducing LoRA synchronization traffic and eliminating the weak-device failures observed under the baseline.
+This paper presents \textbf{ATLAS}, a task-aware framework for parameter-efficient federated fine-tuning of transformer LLMs on heterogeneous clients. ATLAS combines representation-based task discovery, budget-aware heterogeneous LoRA allocation, state-consistent split federated learning, and LoRA-only graph regularization, together with INT8 LoRA communication and FP32 server-side computation~\cite{mira,splitfed,llm_int8,qlora,zeroquant,smoothquant}. On a heterogeneous GLUE federation with three tasks, nine clients, and three backbones~\cite{glue}, ATLAS improves the macro-average task score over standard FedAvg by 16.18 points on DistilBERT, 24.83 points on GPT-2, and 6.86 points on Qwen-2.5-0.5B, while reducing LoRA synchronization traffic and eliminating weak-device failures.
 \end{abstract}
 
 \begin{IEEEkeywords}
@@ -54,7 +55,7 @@ Existing work has explored FMTL (e.g., MIRA~\cite{mira}), heterogeneous PEFT und
 
 This paper presents \textbf{ATLAS}, an adaptive task-aware FL framework for parameter-efficient fine-tuning of transformer-based LLMs on heterogeneous clients. ATLAS integrates four phases: (i) representation-based task clustering via compact backbone fingerprints, (ii) device- and data-aware heterogeneous LoRA rank allocation under explicit memory budgets, (iii) split federated learning with adaptive split selection, client-specific server-state synchronization, and dual-path aggregation, and (iv) MIRA-style Laplacian regularization over an RBF-kernel task graph derived from those fingerprints.
 
-We implement ATLAS in an end-to-end pipeline and evaluate it on a heterogeneous GLUE federation with three tasks, nine clients, and three backbones. The completed study shows consistent gains over standard FedAvg across all evaluated models, together with lower adapter communication cost and improved robustness for weak devices.
+We implement ATLAS in an end-to-end pipeline and evaluate it on a heterogeneous GLUE federation with three tasks, nine clients, and three backbones. The experimental results show consistent gains over standard FedAvg across all evaluated models, together with lower adapter communication cost and improved robustness for weak devices.
 
 \textbf{Contributions.}
 ATLAS makes the following contributions:
@@ -100,8 +101,6 @@ ATLAS adds task-aware clustering, graph personalization, and dual-path aggregati
 Several recent frameworks study system-level aspects of FL and split learning for LLMs. VFLAIR-LLM provides an extensible split-LLM benchmark spanning multiple models, datasets, attacks, and defenses, and shows that mid-layer splits often preserve utility while enabling privacy-preserving inference and fine-tuning~\cite{vflair_llm}. TITANIC investigates production-grade FL with LLMs, highlighting challenges such as heterogeneous systems, scaling, and communication optimization in realistic deployments~\cite{titanic}.
 
 These frameworks offer valuable insights into practical design trade-offs and provide tooling for evaluation, but they remain largely task-agnostic: clients are typically treated as a homogeneous population, and neither automatic task discovery nor graph-based personalization are tightly integrated into the optimization pipeline. In contrast, ATLAS targets a unified design that couples task-aware clustering, device-aware heterogeneous LoRA allocation, state-consistent split execution, dual-path aggregation, and Laplacian regularization over a fingerprint-derived task graph into a single, end-to-end FL framework for edge LLMs.
-
-These frameworks offer insights but remain task-agnostic. ATLAS uniquely couples representation-based task discovery, heterogeneous LoRA, split execution, dual-path aggregation, and Laplacian regularization.
 
 \section{Problem Formulation}
 \label{sec:problem}
@@ -149,13 +148,20 @@ where $d_\ell$ is the layer hidden dimension and $b_\ell$ captures datatype/over
 \section{ATLAS Methodology}
 \label{sec:methodology}
 
-ATLAS implements a four-phase pipeline: (i) representation fingerprinting and task clustering, (ii) device-aware heterogeneous LoRA rank allocation under explicit budgets, (iii) split federated learning with task-aware aggregation and a heuristic weighted-score split selector, and (iv) Laplacian regularization over a fingerprint-derived task graph.
+ATLAS implements a four-phase pipeline: (i) representation fingerprinting and task clustering, (ii) device-aware heterogeneous LoRA rank allocation under explicit budgets, (iii) split federated learning with task-aware aggregation and a heuristic weighted-score split selector, and (iv) Laplacian regularization over a fingerprint-derived task graph. Figure~\ref{fig:atlas_system_design} summarizes how these four phases interact within the end-to-end training system.
+
+\begin{figure*}[t]
+  \centering
+  \includegraphics[width=0.96\textwidth]{atlas-diagram.pdf}
+  \caption{ATLAS system design. Phase 1 extracts frozen-backbone fingerprints and discovers task-consistent client groups; Phase 2 allocates heterogeneous LoRA ranks under device budgets; Phase 3 performs split federated optimization with cluster-aware synchronization and aggregation; Phase 4 applies graph-based Laplacian personalization over the discovered task structure.}
+  \label{fig:atlas_system_design}
+\end{figure*}
 
 \subsection{Phase 1: Representation Fingerprinting and Task Clustering}
 \label{subsec:phase1}
 
 \textbf{Fingerprint extraction.}
-Fingerprints should separate clients by task semantics before any federated averaging occurs. In the current ATLAS architecture, each client $k$ therefore computes a \emph{representation fingerprint} from a small number of local examples using the frozen backbone. For encoder models we use the [CLS] token embedding; for decoder-only models we use the analogous pooled final hidden-state representation. These raw sequence embeddings are averaged locally, then $\ell_2$-normalized and mean-centered across clients before cosine-based clustering~\cite{sbert}. We keep PCA compression as an optional fallback for high-dimensional fingerprint variants.
+Fingerprints should separate clients by task semantics before any federated averaging occurs. In ATLAS, each client $k$ therefore computes a \emph{representation fingerprint} from a small number of local examples using the frozen backbone. For encoder models we use the [CLS] token embedding; for decoder-only models we use the analogous pooled final hidden-state representation. These raw sequence embeddings are averaged locally, then $\ell_2$-normalized and mean-centered across clients before cosine-based clustering~\cite{sbert}. We keep PCA compression as an optional fallback for high-dimensional fingerprint variants.
 
 
 \textbf{Multi-metric cluster selection.} Given fingerprints $\{\mathbf{f}_k\}$, ATLAS runs $k$-means over a constrained candidate range $[k_\text{min}, k_\text{max}]$ and selects $k^*$ via
@@ -193,7 +199,7 @@ $S_f$ & Fingerprint samples per client \\
 \end{tabular}
 \end{table}
 
-\begin{algorithm}[!t]
+\begin{algorithm}[t]
 \caption{Representation-Based Task Clustering in ATLAS}
 \label{alg:task_clustering}
 \begin{algorithmic}[1]
@@ -326,7 +332,7 @@ A_k \leftarrow A_k - \eta \sum_{\ell} a_{k\ell}(A_k-A_\ell),
 \end{equation}
 where $\eta$ controls the coupling strength. Applying the update on pre-aggregation local adapters avoids the degenerate zero-regularization case that occurs if all cluster members are first averaged to the same point~\cite{mira,scaffold,pfedme}. This nudges similar clients to align while preserving task-specific personalization.
 
-\begin{algorithm}[!t]
+\begin{algorithm}[t]
 \caption{Task Graph Construction with RBF Kernel}
 \label{alg:task_graph}
 \begin{algorithmic}[1]
@@ -347,7 +353,7 @@ where $\eta$ controls the coupling strength. Applying the update on pre-aggregat
 
 \textbf{Heterogeneous rank handling.} To align adapters across clients with varying ranks $r_{k\ell} \neq r_{k'\ell}$, ATLAS computes the Laplacian in the shared low-rank subspace only. For a client pair $(k,\ell)$, let $r_{\min}=\min(r_k,r_\ell)$; the LoRA difference is evaluated on the first $r_{\min}$ rows/columns and the resulting update is zero-padded back to client $k$'s native rank. This preserves high-rank client capacity while regularizing the common subspace shared with its neighbors.
 
-\begin{algorithm}[!t]
+\begin{algorithm}[t]
 \caption{Laplacian Regularization with Heterogeneous LoRA Ranks}
 \label{alg:laplacian_aggregation}
 \begin{algorithmic}[1]
@@ -391,7 +397,7 @@ We simulate a federation of $K=9$ clients (3 clients per task) with heterogeneou
 
 \begin{table}[t]
 \centering
-\caption{Federation and dataset configuration used in the completed study.}
+\caption{Federation and dataset configuration used in the experiments.}
 \label{tab:exp_federation_setup}
 \begin{tabular}{lccc}
 \toprule
@@ -410,7 +416,7 @@ We consider three backbones spanning encoder and decoder architectures: \textit{
 
 \subsection{Training Protocol}
 
-Unless otherwise stated, we fine-tune LoRA adapters together with the cluster-specific server head while keeping the backbone frozen. Fingerprints are extracted from frozen-backbone sequence embeddings, cluster heads are initialized with deterministic Xavier weights plus log-prior biases, and the Laplacian is enabled after a one-round warmup. We run federated training for 10 communication rounds with 2 local epochs per round. The main comparisons are reported over seeds $\{42, 123, 456\}$.
+Unless otherwise stated, we fine-tune LoRA adapters together with the cluster-specific server head while keeping the backbone frozen. Fingerprints are extracted from frozen-backbone sequence embeddings, cluster heads are initialized with deterministic Xavier weights plus log-prior biases, and the Laplacian is enabled after a one-round warmup. We run federated training for 10 communication rounds with 3 local epochs per round. The main comparisons are reported over seeds $\{42, 123, 456\}$.
 
 \begin{table}[t]
 \centering
@@ -421,7 +427,7 @@ Unless otherwise stated, we fine-tune LoRA adapters together with the cluster-sp
 \textbf{Hyperparameter} & \textbf{Value} \\
 \midrule
 Global rounds & 10 \\
-Local epochs/round & 3 \\
+Local epochs/round & 2 \\
 Max samples/client & 3000 \\
 Seeds & $\{42, 123, 456\}$ \\
 LoRA rank candidates & $\{4,8,16,32,64\}$ \\
@@ -443,7 +449,7 @@ To compare ``everything'' while keeping the study interpretable, we adopt a prog
 
 \begin{table*}[t]
 \centering
-\caption{Method comparison matrix used for the completed study.}
+\caption{Method comparison matrix used in the experiments.}
 \label{tab:method_matrix}
 \begin{tabular}{lccccc}
 \toprule
@@ -463,7 +469,7 @@ We report task metrics on each client validation split: accuracy (SST-2), F1 (MR
 
 \subsection{Main Results}
 
-Table~\ref{tab:main_results_all_models} summarizes the main quantitative results of the experimental analysis. ATLAS outperforms standard FedAvg on all three backbones. On DistilBERT, ATLAS improves the macro-average from $0.6214 \pm 0.0125$ to $0.7832 \pm 0.0078$, a gain of 16.18 percentage points. On GPT-2, the gain is even larger, from $0.5605 \pm 0.0071$ to $0.8088 \pm 0.0158$, corresponding to 24.83 percentage points. On Qwen-2.5-0.5B, ATLAS improves the macro-average from $0.7882 \pm 0.0247$ to $0.8568 \pm 0.0054$, a gain of 6.86 percentage points.
+Table~\ref{tab:main_results_all_models} summarizes the main quantitative results. ATLAS outperforms standard FedAvg on all three backbones. On DistilBERT, ATLAS improves the macro-average task score from $0.6214 \pm 0.0125$ to $0.7832 \pm 0.0078$, a gain of $+0.1618$. On GPT-2, the gain is larger, from $0.5605 \pm 0.0071$ to $0.8088 \pm 0.0158$, corresponding to $+0.2483$. On Qwen-2.5-0.5B, ATLAS improves the macro-average task score from $0.7882 \pm 0.0247$ to $0.8568 \pm 0.0054$, a gain of $+0.0686$. For GPT-2, all four methods are evaluated over the same three seeds, which makes the ablation ordering directly comparable under matched mean$\pm$std reporting.
 
 \begin{table*}[t]
 \centering
@@ -471,14 +477,14 @@ Table~\ref{tab:main_results_all_models} summarizes the main quantitative results
 \label{tab:main_results_all_models}
 \begin{tabular}{llcccccc}
 \toprule
-\textbf{Backbone} & \textbf{Method} & \textbf{Macro Avg.} & \textbf{SST-2} & \textbf{MRPC (F1)} & \textbf{QNLI} & \textbf{Weak Devs Dropped} & \textbf{LoRA Comm. (MB)} \\
+\textbf{Backbone} & \textbf{Method} & \textbf{Macro Avg. Score} & \textbf{SST-2} & \textbf{MRPC (F1)} & \textbf{QNLI} & \textbf{Weak Devs Dropped} & \textbf{LoRA Comm. (MB)} \\
 \midrule
 DistilBERT & Standard FedAvg & 0.6214 $\pm$ 0.0125 & 0.6705 & 0.4423 & 0.6514 & 2 & 889.3 \\
  & ATLAS & 0.7832 $\pm$ 0.0078 & 0.8654 & 0.7298 & 0.7544 & 0 & 611.4 \\
 \midrule
 GPT-2 & Standard FedAvg & 0.5605 $\pm$ 0.0071 & 0.6858 & 0.4623 & 0.5335 & 2 & 827.4 \\
- & FedAvg-Cluster & 0.6943 & 0.6326 & 0.6032 & 0.6970 & 2 & 685.8 \\
- & ATLAS w/o Laplacian & 0.7878 & 0.8233 & 0.6542 & 0.7459 & 0 & 587.5 \\
+ & FedAvg-Cluster & 0.6962 $\pm$ 0.0016 & 0.6358 & 0.6046 & 0.6958 & 2 & 685.8 \\
+ & ATLAS w/o Laplacian & 0.7881 $\pm$ 0.0002 & 0.8237 & 0.6548 & 0.7456 & 0 & 587.5 \\
  & ATLAS & 0.8088 $\pm$ 0.0158 & 0.8970 & 0.7451 & 0.8156 & 0 & 554.7 \\
 \midrule
 Qwen-2.5-0.5B & Standard FedAvg & 0.7882 $\pm$ 0.0247 & 0.8295 & 0.7234 & 0.8223 & 2 & 4,070.9 \\
@@ -487,71 +493,144 @@ Qwen-2.5-0.5B & Standard FedAvg & 0.7882 $\pm$ 0.0247 & 0.8295 & 0.7234 & 0.8223
 \end{tabular}
 \end{table*}
 
-The gains are consistent at the per-task level. For DistilBERT, ATLAS improves SST-2, MRPC, and QNLI by 0.1949, 0.2875, and 0.1030, respectively, relative to standard FedAvg. For GPT-2, the corresponding improvements are 0.2112, 0.2828, and 0.2821. For Qwen-2.5-0.5B, ATLAS improves all three tasks by 0.0738, 0.0789, and 0.0531. These results support the claim that ATLAS improves both overall federation quality and per-task behavior rather than trading one task against another.
+The gains are consistent at the per-task level. For DistilBERT, ATLAS improves SST-2, MRPC, and QNLI by 0.1949, 0.2875, and 0.1030, respectively, relative to standard FedAvg. For GPT-2, the corresponding improvements are 0.2112, 0.2828, and 0.2821. For Qwen-2.5-0.5B, the gains are 0.0738, 0.0789, and 0.0531. Figure~\ref{fig:macro_accuracy} confirms that these improvements are systematic across backbone families, while Figure~\ref{fig:per_task_accuracy} shows that ATLAS improves each task-specific metric rather than merely redistributing performance across tasks.
 
 \begin{figure*}[t]
   \centering
-  \includegraphics[width=\textwidth]{results/fig1_macro_accuracy.pdf}
-  \caption{Macro-average accuracy by method and backbone. Error bars denote standard deviation across seeds when multiple runs are available.}
+  \includegraphics[width=0.9\textwidth]{fig1_macro_accuracy.pdf}
+  \caption{Macro-average task score by method and backbone. Error bars denote standard deviation across seeds when multiple runs are available.}
   \label{fig:macro_accuracy}
+\end{figure*}
+
+\begin{figure*}[t]
+  \centering
+  \includegraphics[width=0.9\textwidth]{fig2_per_task_accuracy.pdf}
+  \caption{Per-task performance across backbones. ATLAS improves SST-2 accuracy, MRPC F1, and QNLI accuracy consistently; on GPT-2, the full method also outperforms both \texttt{fedavg\_cluster} and \texttt{atlas\_no\_laplacian}.}
+  \label{fig:per_task_accuracy}
 \end{figure*}
 
 \subsection{Communication and Robustness}
 
-ATLAS also improves communication efficiency. Relative to standard FedAvg, LoRA synchronization traffic drops from 889.3~MB to 611.4~MB on DistilBERT (0.69$\times$), from 827.4~MB to 554.7~MB on GPT-2 (0.67$\times$), and from 4070.9~MB to 1154.0~MB on Qwen-2.5-0.5B (0.28$\times$). The largest absolute reduction occurs on Qwen, where ATLAS reduces synchronization traffic by 2916.9~MB while still improving the macro-average score.
+ATLAS also improves communication efficiency. Relative to standard FedAvg, LoRA synchronization traffic drops from 889.3~MB to 611.4~MB on DistilBERT (31.3\% reduction), from 827.4~MB to 554.7~MB on GPT-2 (33.0\%), and from 4070.9~MB to 1154.0~MB on Qwen-2.5-0.5B (71.7\%). The largest absolute reduction occurs on Qwen, where ATLAS reduces synchronization traffic by 2916.9~MB while still improving the macro-average task score. Figure~\ref{fig:comm_vs_perf} makes the systems point more clearly: ATLAS shifts the operating point toward the desirable high-score, low-traffic region rather than trading one objective for the other. The GPT-2 ablation follows the same pattern, with each additional ATLAS component moving the method toward a better communication-performance frontier.
 
-Robustness to device heterogeneity also improves materially. In all three backbone families, standard FedAvg drops an average of 2 weak-device clients out of 9, while ATLAS drops none. Figure~\ref{fig:client_failures} shows that these failures are not isolated outliers but a recurring pattern under the baseline. This matters because a heterogeneous FL method that achieves high accuracy only by excluding weaker devices does not satisfy the motivating systems constraint.
+\begin{table}[t]
+\centering
+\caption{Efficiency and robustness gains of ATLAS over standard FedAvg.}
+\label{tab:efficiency_summary}
+\begin{tabular}{lccc}
+\toprule
+\textbf{Backbone} & $\Delta$ Macro Score & Comm. Reduction & Weak Clients Recovered \\
+\midrule
+DistilBERT & +0.1618 & 31.3\% & 2 \\
+GPT-2 & +0.2483 & 33.0\% & 2 \\
+Qwen-2.5-0.5B & +0.0686 & 71.7\% & 2 \\
+\bottomrule
+\end{tabular}
+\end{table}
 
 \begin{figure*}[t]
   \centering
-  \includegraphics[width=\textwidth]{results/fig3_convergence.pdf}
+  \includegraphics[width=0.88\textwidth]{fig5_lora_comm_vs_perf.pdf}
+  \caption{Communication-performance trade-off. Each point reports macro-average task score versus LoRA synchronization traffic. Across backbones, ATLAS moves the operating point toward higher task score at lower communication cost, and the GPT-2 ablation follows the same trend as ATLAS components are enabled.}
+  \label{fig:comm_vs_perf}
+\end{figure*}
+
+Robustness to device heterogeneity also improves materially. Table~\ref{tab:weak_device_retention} replaces the per-client failure figure with the more decision-relevant summary for a systems paper: whether the weakest clients remain trainable. In all three backbone families, standard FedAvg drops both weak-device clients, while ATLAS retains both. Figure~\ref{fig:convergence_curves} further indicates that the advantage is not only a late-round effect: ATLAS converges toward stronger final solutions while avoiding the instability associated with weak-client attrition in the baseline. This matters because a heterogeneous FL method that achieves high accuracy only by excluding weaker devices does not satisfy the motivating deployment constraint.
+
+\begin{table}[t]
+\centering
+\caption{Weak-device retention under heterogeneous participation. Each backbone includes two weak-device clients in the 9-client federation.}
+\label{tab:weak_device_retention}
+\begin{tabular}{lccc}
+\toprule
+\textbf{Backbone} & \textbf{Std. FedAvg Drops} & \textbf{ATLAS Drops} & \textbf{ATLAS Retention} \\
+\midrule
+DistilBERT & 2/2 & 0/2 & 100\% \\
+GPT-2 & 2/2 & 0/2 & 100\% \\
+Qwen-2.5-0.5B & 2/2 & 0/2 & 100\% \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{figure*}[t]
+  \centering
+  \includegraphics[width=0.9\textwidth]{fig3_convergence.pdf}
   \caption{Convergence curves for the evaluated backbones. ATLAS converges to a stronger final solution across all three models.}
   \label{fig:convergence_curves}
 \end{figure*}
 
-\begin{figure*}[t]
-  \centering
-  \includegraphics[width=\textwidth]{results/fig9_client_failures.pdf}
-  \caption{Per-client accuracy and failure-threshold analysis. Standard FedAvg exhibits recurring weak-client failures, whereas ATLAS eliminates them across all evaluated backbones.}
-  \label{fig:client_failures}
-\end{figure*}
+\subsection{Runtime Analysis}
 
-\subsection{Ablation on GPT-2}
-
-The GPT-2 ablation provides component-level evidence for the ATLAS design. Table~\ref{tab:ablation_deltas} shows that progressively adding task-aware clustering, heterogeneous ranks, split learning, and Laplacian personalization improves the final result. Relative to standard FedAvg, \texttt{fedavg\_cluster} improves the macro-average from 0.5605 to 0.6943, indicating that restricting collaboration to task-consistent groups already mitigates substantial negative transfer. Adding the remaining ATLAS pipeline without Laplacian increases the macro-average further to 0.7878. The full ATLAS run reaches $0.8088 \pm 0.0158$, and the experimental analysis attributes an additional +0.0210 macro-average accuracy to the Laplacian component over \texttt{atlas\_no\_laplacian}.
+The JSON logs also record per-round wall-clock time and total run time, which lets us qualify the systems gains beyond communication volume alone. Table~\ref{tab:runtime_summary} reports the mean runtime over the three seeds for the main ATLAS versus standard-FedAvg comparisons. As expected, ATLAS is slower in raw wall-clock time because it performs additional clustering-aware bookkeeping, split-server coordination, and Laplacian personalization. On DistilBERT, the mean total runtime increases from 1409.0~s to 1699.4~s; on GPT-2, from 3183.8~s to 5491.3~s; and on Qwen-2.5-0.5B, from 11591.2~s to 15055.1~s. The key point is therefore not that ATLAS reduces wall-clock time, but that it improves task score, communication efficiency, and weak-device retention at a measurable computational overhead that is now explicitly documented.
 
 \begin{table}[t]
 \centering
-\caption{GPT-2 ablation study. The full ATLAS pipeline yields the strongest overall result, and the Laplacian contributes an additional $+0.0210$ macro-average accuracy over ATLAS without Laplacian.}
+\caption{Runtime summary from JSON wall-clock logs (mean $\pm$ std over three seeds).}
+\label{tab:runtime_summary}
+\begin{tabular}{lcc}
+\toprule
+\textbf{Backbone} & \textbf{Method} & \textbf{Total Time (s)} \\
+\midrule
+DistilBERT & Standard FedAvg & $1409.0 \pm 58.3$ \\
+DistilBERT & ATLAS & $1699.4 \pm 14.1$ \\
+\midrule
+GPT-2 & Standard FedAvg & $3183.8 \pm 127.9$ \\
+GPT-2 & ATLAS & $5491.3 \pm 1132.3$ \\
+\midrule
+Qwen-2.5-0.5B & Standard FedAvg & $11591.2 \pm 4.1$ \\
+Qwen-2.5-0.5B & ATLAS & $15055.1 \pm 384.4$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Ablation on GPT-2}
+
+The GPT-2 ablation provides component-level evidence for the ATLAS design. Table~\ref{tab:ablation_deltas} shows a clear progression as ATLAS components are enabled. Relative to standard FedAvg, \texttt{fedavg\_cluster} improves the macro-average task score from $0.5605 \pm 0.0071$ to $0.6962 \pm 0.0016$, indicating that task-consistent mixing alone already mitigates substantial negative transfer. Adding heterogeneous ranks and split learning through \texttt{atlas\_no\_laplacian} raises the macro-average task score further to $0.7881 \pm 0.0002$, showing that most of the gain is preserved even before graph regularization is applied. The full ATLAS run reaches $0.8088 \pm 0.0158$, yielding an additional $+0.0207$ improvement over \texttt{atlas\_no\_laplacian}. Figure~\ref{fig:gpt2_ablation} visualizes the same ordering and shows that the Laplacian gain is accompanied by simultaneous improvements in all reported GPT-2 metrics, not only in the macro-average summary.
+
+\begin{table}[t]
+\centering
+\caption{GPT-2 ablation study. The full ATLAS pipeline yields the strongest overall result, and the Laplacian contributes an additional $+0.0207$ macro-average task score over ATLAS without Laplacian.}
 \label{tab:ablation_deltas}
 \begin{tabular}{lcccc}
 \toprule
 \textbf{Method} & \textbf{Macro Avg.} & \textbf{SST-2} & \textbf{MRPC (F1)} & \textbf{QNLI} \\
 \midrule
 Standard FedAvg & 0.5605 $\pm$ 0.0071 & 0.6858 & 0.4623 & 0.5335 \\
-FedAvg-Cluster & 0.6943 & 0.6326 & 0.6032 & 0.6970 \\
-ATLAS w/o Laplacian & 0.7878 & 0.8233 & 0.6542 & 0.7459 \\
+FedAvg-Cluster & 0.6962 $\pm$ 0.0016 & 0.6358 & 0.6046 & 0.6958 \\
+ATLAS w/o Lap & 0.7881 $\pm$ 0.0002 & 0.8237 & 0.6548 & 0.7456 \\
 ATLAS & 0.8088 $\pm$ 0.0158 & 0.8970 & 0.7451 & 0.8156 \\
 \bottomrule
 \end{tabular}
 \end{table}
 
-The ordering remains coherent throughout the GPT-2 ablation: clustering helps, the full heterogeneous split pipeline helps more, and the Laplacian provides an additional incremental gain.
+\begin{figure*}[t]
+  \centering
+  \includegraphics[width=0.9\textwidth]{fig8_ablation_laplacian.pdf}
+  \caption{GPT-2 ablation. Restricting aggregation to task-consistent clusters yields a large improvement over standard FedAvg; adding heterogeneous split training yields a second large improvement; the Laplacian then provides an additional, consistent refinement across the reported metrics.}
+  \label{fig:gpt2_ablation}
+\end{figure*}
 
-\subsection{Task-Aware Structure and Clustering}
+The ordering remains coherent throughout the GPT-2 ablation: clustering helps, the full heterogeneous split pipeline helps more, and the Laplacian provides an additional incremental gain on top of an already strong non-Laplacian system.
 
-ATLAS is intended to be task-aware, so it is important to show that the clustering stage produces meaningful structure. Figure~\ref{fig:fingerprint_clusters} visualizes the GPT-2 fingerprint space for the seed-42 ATLAS run. The clustering metrics indicate positive separation quality and coherent cluster structure, while the corresponding rank-allocation panel shows that heterogeneous LoRA capacity is distributed consistently with the discovered client groups and device profiles. This is not only a visualization artifact: the performance gap between \texttt{standard\_fl} and \texttt{fedavg\_cluster} on GPT-2 already indicates that task-aware mixing is doing real optimization work.
+\subsection{Device-Aware Adapter Allocation}
+
+The systems argument of ATLAS depends not only on accuracy but also on whether the method actually adapts model capacity to device constraints. Figure~\ref{fig:device_allocation} shows that this behavior is present in the GPT-2 runs. Standard FedAvg keeps the adapter budget fixed at roughly 221K trainable LoRA parameters for all device tiers. In contrast, ATLAS assigns substantially smaller adapters to weak devices and larger adapters to strong devices, ranging from about 94K parameters on 2~GB devices to about 770K on 16~GB devices. This monotonic capacity scaling is consistent with the design goal of preserving feasibility on weak clients without wasting available memory on strong ones.
 
 \begin{figure}[t]
   \centering
-  \includegraphics[width=\columnwidth]{results/fig10_clustering.pdf}
-  \caption{Fingerprint-space clustering and client-wise heterogeneous rank allocation for the GPT-2 ATLAS run with seed 42.}
-  \label{fig:fingerprint_clusters}
+  \includegraphics[width=\columnwidth]{fig10_device_allocation.pdf}
+  \caption{Device-aware adapter allocation for GPT-2. ATLAS scales trainable LoRA capacity with device tier, whereas standard FedAvg enforces the same adapter size on all clients. Error bars denote standard deviation across the three seeds.}
+  \label{fig:device_allocation}
 \end{figure}
 
-\subsection{Discussion}
+\section{Discussion}
+\label{sec:discussion}
 
-The completed study supports three main conclusions. First, the ATLAS pipeline consistently outperforms standard FedAvg across encoder and decoder backbones, suggesting that the method is not tied to a single architecture family. Second, the gains are accompanied by lower LoRA synchronization traffic and the elimination of weak-device dropouts, which strengthens the systems argument rather than reducing the contribution to a pure accuracy story. Third, the GPT-2 ablation indicates that the performance gain is not attributable to a single isolated trick: task-aware clustering delivers the first large improvement, the full heterogeneous split pipeline yields a larger one, and Laplacian personalization contributes a further but smaller gain.
+The results indicate that ATLAS improves the quality-communication-robustness frontier rather than a single metric in isolation. Across backbones, it increases macro-average task score, reduces LoRA synchronization traffic, and retains weak devices that standard FedAvg repeatedly drops. The GPT-2 ablation shows that this gain is cumulative: task-aware clustering removes much of the negative transfer, heterogeneous split adaptation adds a second improvement, and Laplacian personalization provides a further refinement.
+
+The main trade-off is runtime. ATLAS is slower in wall-clock time than standard FedAvg because clustering-aware coordination, split-state synchronization, and graph-based personalization add overhead. The systems claim is therefore not lower runtime, but a better operating point: higher task score, lower adapter communication, and stronger participation robustness at a measurable computational cost.
+
+The weak-device results are especially important for practical edge deployment. A heterogeneous FL method should not depend on excluding the least capable clients to remain competitive. In the reported federation, standard FedAvg repeatedly drops both weak devices, whereas ATLAS retains them while still improving the aggregate score. This pattern helps explain why the components work well together: clustering limits harmful cross-task mixing, heterogeneous LoRA ranks avoid uniform over-provisioning, split execution reduces client burden, and the Laplacian personalizes within the discovered task structure instead of smoothing across unrelated clients.
 
 \subsection{Comparison to Prior Work}
 
@@ -574,6 +653,31 @@ ATLAS (this work) & \checkmark & \checkmark & \checkmark & \checkmark \\
 \bottomrule
 \end{tabular}
 \end{table}
+
+Relative to MIRA, the main distinction is that ATLAS applies graph regularization only to personalized LoRA adapters and integrates it with split execution and device-aware heterogeneous ranks. Relative to FAH-QLoRA, the contribution is not only heterogeneous PEFT but also task-aware collaboration and graph-based personalization. Relative to SplitLoRA and HSplitLoRA, the contribution is not only split feasibility, but the explicit treatment of task structure, rank-aware aggregation, and task-constrained personalization. This combination is what allows ATLAS to address the coupled statistical and systems heterogeneity present in realistic edge federations.
+
+The novelty of ATLAS therefore lies less in introducing a single entirely new primitive than in the system-level integration of several complementary ideas into one coherent pipeline. Representation-based task discovery, heterogeneous LoRA allocation, split execution, and graph regularization have each appeared in partial form in prior literature, but ATLAS is, to our knowledge, the first framework to combine them in a unified design targeted at heterogeneous edge LLM adaptation. We view this as a practical rather than purely taxonomic contribution: the value of the framework comes from making these components compatible under one optimization and communication protocol.
+
+\subsection{Limitations and Threats to Validity}
+
+The current study has five main limitations. First, the evaluation is conducted on a moderate federation with nine clients and three GLUE classification tasks, so the present results should be read as a proof-of-concept rather than a full scalability study. In particular, while Phase~1 clustering and Phase~4 graph construction are lightweight at this scale, much larger federations with hundreds or thousands of clients would likely require approximate nearest-neighbor graph construction, sparse connectivity constraints, or hierarchical clustering to keep similarity estimation and synchronization overhead manageable.
+
+Second, the framework has several interacting design choices, including the split-selection score weights, Laplacian strength $\eta$, RBF bandwidth $\alpha$, rank caps, and cut-layer placement. The current paper fixes these values to defaults that worked consistently across the completed runs, but it does not yet provide a comprehensive sensitivity analysis.
+
+Third, reproducibility is helped by fixed seeds, saved JSON logs, and released scripts, but the full ATLAS pipeline remains more complex than a standard FedAvg baseline because several phases interact sequentially. A stronger reproducibility package should therefore include a reduced benchmark suite for sanity checking each phase in isolation, together with ablations that show which conclusions are stable across alternate clustering and split configurations.
+
+Fourth, privacy is only partial: ATLAS keeps raw data local, but the split-learning path exchanges intermediate activations (``smashed data''), which can still leak information through inversion or property-inference attacks~\cite{splitfed,vflair_llm}. The current paper does not quantify this privacy-utility trade-off. Promising mitigation directions include differential privacy or calibrated noise on transmitted activations, secure aggregation or encryption for adapter exchange, and empirical evaluation under activation-reconstruction attacks to determine how much privacy is lost at different split depths.
+
+Fifth, while the JSON logs provide wall-clock runtime, the paper still does not report client FLOPs, energy, or bandwidth-latency breakdowns by device tier. These measurements are necessary for a deployment-oriented assessment and remain important directions for future work.
+
+\section{Conclusion}
+\label{sec:conclusion}
+
+This paper presented ATLAS, a unified framework for federated adaptation of transformer-based LLMs over heterogeneous edge clients. ATLAS combines representation-based task discovery, budget-aware heterogeneous LoRA allocation, state-consistent split federated learning, and LoRA-only graph regularization within a single end-to-end pipeline. Across DistilBERT, GPT-2, and Qwen-2.5-0.5B, the framework consistently improves macro-average task score over standard FedAvg while reducing LoRA synchronization traffic and eliminating weak-device failures in the evaluated federation.
+
+The main conclusion is that statistical heterogeneity and systems heterogeneity should be handled jointly rather than as separate optimization problems. In ATLAS, task-aware clustering limits negative transfer, heterogeneous adapter allocation matches model capacity to device budgets, split execution improves feasibility for constrained clients, and graph-based personalization refines adaptation within task-consistent neighborhoods. The resulting gains are therefore not attributable to a single isolated mechanism, but to the interaction between these components.
+
+At the same time, the current evidence has clear boundaries: the federation scale is moderate, the workloads are still narrow, the split-learning path introduces privacy exposure through exchanged activations, and the hyperparameter study is not yet exhaustive. The most important next step is not adding one more component, but stress-testing the existing design through larger federations, broader generative workloads, explicit sensitivity analyses over $\eta$, $\alpha$, and split-selection weights, and privacy-enhanced split protocols with measured privacy-utility trade-offs. If these follow-up studies confirm the present trends, ATLAS could serve as a useful reference architecture for practical on-device LLM adaptation in heterogeneous federated settings.
 
 
 \bibliographystyle{IEEEtran}

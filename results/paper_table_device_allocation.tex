@@ -1,0 +1,15 @@
+\begin{table}[t]
+\centering
+\caption{GPT-2 device-aware adapter allocation. Approximate trainable LoRA parameters are computed as $2d\sum_\ell r_\ell$ with $d=768$.}
+\label{tab:device_allocation}
+\begin{tabular}{lcc}
+\toprule
+\textbf{Device Tier} & \textbf{ATLAS Params (K)} & \textbf{Std. FedAvg Params (K)} \\
+\midrule
+CPU 2GB & 94 & 221 \\
+Tablet 4GB & 190 & 221 \\
+Laptop 8GB & 315 & 221 \\
+GPU 16GB & 770 & 221 \\
+\bottomrule
+\end{tabular}
+\end{table}
