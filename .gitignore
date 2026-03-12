@@ -35,7 +35,7 @@ env/
 
 # Notebooks
 .ipynb_checkpoints/
-atlas_results_analysis.ipynb
+atlas_results_analysis2.ipynb
 
 # Tests and coverage
 .pytest_cache/
@@ -62,18 +62,15 @@ models/
 *.ckpt
 
 # Generated experiment outputs
-results/*.json
-results/*.pdf
-results/*.tex
-results/statistical/
+results_copy/
 
 # Paper and private assets kept outside the public source tree
 *.pdf
 *.tex
-references.bib
+*.bib
 *.txt
-docs/SOLUTION_AND_REFERENCES.md
-docs/METHODOLOGY.md
+documentations/
+
 # Temporary files
 *.log
 *.tmp

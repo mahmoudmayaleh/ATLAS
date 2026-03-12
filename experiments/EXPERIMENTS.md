@@ -1,6 +1,18 @@
-# Experiment Reference
+# Experiments Package
 
 This document describes the maintained experiment interfaces in the public repository.
+
+## Maintained Entry Points
+
+- `experiments/atlas_integrated.py`: primary runner for classification experiments
+- `experiments/generate_results_tables.py`: table generation from local result JSON files
+- `experiments/generate_publication_plots.py`: plot generation from local result JSON files
+- `experiments/generate_all_publication_materials.py`: convenience wrapper for tables and plots
+
+## Configuration Sources
+
+- `experiments/config.py` defines task metadata, model aliases, device profiles, and baseline metadata.
+- `experiments/metrics.py` contains metric collection helpers used during and after runs.
 
 ## Supported Tasks
 
@@ -28,13 +40,13 @@ Common flags:
 - `--resume path.pkl`
 - `--max-rounds N`
 
-Quick validation:
+### Quick Validation
 
 ```bash
 python experiments/atlas_integrated.py --mode quick --ablation atlas --tasks sst2 mrpc qnli --rounds 2 --samples 80 --local-epochs 1 --seed 42
 ```
 
-Full run:
+### Full Run
 
 ```bash
 python experiments/atlas_integrated.py \
@@ -91,3 +103,9 @@ python experiments/generate_all_publication_materials.py --results-dir results -
 ```
 
 These products are generated artifacts and are not intended to be committed to the public repository.
+
+## Statistical and Publication Utilities
+
+If you have a local `experiments/run_statistical_experiments.py` in your private workflow, keep it outside the public source tree. The open-source repository keeps the core runner and post-processing scripts only.
+
+Publication materials are generated from local result files, not stored as source artifacts.
