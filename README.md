@@ -106,9 +106,7 @@ These are treated as build artifacts and are ignored by default.
 ## Documentation
 
 - `RUN_INSTRUCTIONS.md`: concise setup and execution guide
-- `docs/EXPERIMENTS.md`: experiment entrypoints, ablations, and outputs
-- `docs/IEEE_PUBLICATION_GUIDE.md`: reproducibility checklist for paper runs
-- `experiments/README.md`: experiment package overview
+- `experiments/EXPERIMENTS.md`: experiment entrypoints, ablations, and outputs
 
 ## Validation
 
