@@ -44,21 +44,6 @@ SUMMARIZATION_TASKS = {
     }
 }
 
-# E2E NLG dataset — primary comparison target for SplitLoRA / HSplitLoRA papers
-# Use with GPT-2 / GPT-2-medium as causal LM (see experiments/run_e2e_nlg.py)
-NLG_TASKS = {
-    "e2e": {
-        "name": "e2e",
-        "hf_path": "tuetschek/e2e_nlg",     # HuggingFace dataset path (parquet, no legacy script)
-        "input_column": "meaning_representation",
-        "target_column": "human_reference",
-        "metrics": ["BLEU", "NIST", "METEOR", "ROUGE-L", "PPL"],
-        "max_input_length": 128,
-        "max_target_length": 128,
-        "n_clients": 5,                     # SplitLoRA uses N=3-5
-    }
-}
-
 
 # ========== MODEL CONFIGURATIONS ==========
 
@@ -400,8 +385,6 @@ def get_dataset_config(dataset_name: str) -> Dict[str, Any]:
         return GLUE_TASKS[dataset_name]
     elif dataset_name in SUMMARIZATION_TASKS:
         return SUMMARIZATION_TASKS[dataset_name]
-    elif dataset_name in NLG_TASKS:
-        return NLG_TASKS[dataset_name]
     else:
         raise ValueError(f"Unknown dataset: {dataset_name}")
 

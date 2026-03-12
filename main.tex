@@ -33,6 +33,7 @@ Email: zakaria.abouelhouda@inrs.ca}
 Federated learning (FL) can adapt large language models (LLMs) without centralizing private data, but deployment on heterogeneous edge clients is constrained by task diversity, device variability, and communication cost. Standard task-agnostic aggregation and uniform-rank low-rank adaptation (LoRA) often cause negative transfer and poor resource matching.
 
 This paper presents \textbf{ATLAS}, a task-aware framework for parameter-efficient federated fine-tuning of transformer LLMs on heterogeneous clients. ATLAS combines representation-based task discovery, budget-aware heterogeneous LoRA allocation, state-consistent split federated learning, and LoRA-only graph regularization, together with INT8 LoRA communication and FP32 server-side computation~\cite{mira,splitfed,llm_int8,qlora,zeroquant,smoothquant}. On a heterogeneous GLUE federation with three tasks, nine clients, and three backbones~\cite{glue}, ATLAS improves the macro-average task score over standard FedAvg by 16.18 points on DistilBERT, 24.83 points on GPT-2, and 6.86 points on Qwen-2.5-0.5B, while reducing LoRA synchronization traffic and eliminating weak-device failures.
+To support reproducibility, we release the ATLAS framework as open-source software at \url{https://github.com/REPLACE-WITH-ATLAS-REPO}.
 \end{abstract}
 
 \begin{IEEEkeywords}
@@ -55,6 +56,8 @@ Existing work has explored FMTL (e.g., MIRA~\cite{mira}), heterogeneous PEFT und
 
 This paper presents \textbf{ATLAS}, an adaptive task-aware FL framework for parameter-efficient fine-tuning of transformer-based LLMs on heterogeneous clients. ATLAS integrates four phases: (i) representation-based task clustering via compact backbone fingerprints, (ii) device- and data-aware heterogeneous LoRA rank allocation under explicit memory budgets, (iii) split federated learning with adaptive split selection, client-specific server-state synchronization, and dual-path aggregation, and (iv) MIRA-style Laplacian regularization over an RBF-kernel task graph derived from those fingerprints.
 
+To improve reproducibility and reuse, we release the complete ATLAS framework, including the end-to-end training pipeline, scripts, and documentation, as open-source software at \url{https://github.com/REPLACE-WITH-ATLAS-REPO}.
+
 We implement ATLAS in an end-to-end pipeline and evaluate it on a heterogeneous GLUE federation with three tasks, nine clients, and three backbones. The experimental results show consistent gains over standard FedAvg across all evaluated models, together with lower adapter communication cost and improved robustness for weak devices.
 
 \textbf{Contributions.}
@@ -64,6 +67,7 @@ ATLAS makes the following contributions:
 \item Budget-aware heterogeneous LoRA: ATLAS allocates per-layer LoRA ranks from discrete candidates under explicit adapter-memory budgets, augments attention and FFN projections, and caps ranks for low-resource tasks to avoid over-parameterization on small local datasets~\cite{lora,fah_qlora}.
 \item Dual-path split federated optimization: ATLAS combines heuristic split selection with state-consistent split execution, LoRA-only pre-aggregation personalization, and weighted cluster-level averaging of shared non-LoRA parameters, enabling heterogeneous-rank collaboration without cross-task contamination~\cite{mira,splitfed,hsplitlora,pfedme}.
 \item Communication-aware personalization: ATLAS applies a MIRA-style Laplacian over a block-diagonal task graph and couples it with per-channel INT8 LoRA transmission plus FP32 dequantized computation, reducing adapter traffic while preserving the small inter-client differences required by graph regularization~\cite{llm_int8,qlora,zeroquant,smoothquant}.
+\item Open-source reproducibility: we release the ATLAS codebase as an open-source framework with the integrated training pipeline, experiment scripts, and documentation to support reproducibility and follow-up research at \url{https://github.com/REPLACE-WITH-ATLAS-REPO}.
 \end{itemize}
 
 \section{Related Work}
@@ -152,7 +156,7 @@ ATLAS implements a four-phase pipeline: (i) representation fingerprinting and ta
 
 \begin{figure*}[t]
   \centering
-  \includegraphics[width=0.96\textwidth]{atlas-diagram.pdf}
+  \includegraphics[width=0.96\textwidth]{ATLAS-phases.pdf}
   \caption{ATLAS system design. Phase 1 extracts frozen-backbone fingerprints and discovers task-consistent client groups; Phase 2 allocates heterogeneous LoRA ranks under device budgets; Phase 3 performs split federated optimization with cluster-aware synchronization and aggregation; Phase 4 applies graph-based Laplacian personalization over the discovered task structure.}
   \label{fig:atlas_system_design}
 \end{figure*}
@@ -626,17 +630,17 @@ The systems argument of ATLAS depends not only on accuracy but also on whether t
 \section{Discussion}
 \label{sec:discussion}
 
-The results indicate that ATLAS improves the quality-communication-robustness frontier rather than a single metric in isolation. Across backbones, it increases macro-average task score, reduces LoRA synchronization traffic, and retains weak devices that standard FedAvg repeatedly drops. The GPT-2 ablation shows that this gain is cumulative: task-aware clustering removes much of the negative transfer, heterogeneous split adaptation adds a second improvement, and Laplacian personalization provides a further refinement.
+ATLAS improves the quality-communication-robustness frontier across backbones—increasing macro-average accuracy, reducing LoRA synchronization traffic, and retaining weak devices that standard FedAvg drops. The GPT-2 ablation shows these gains are cumulative: task clustering removes most negative transfer, heterogeneous split adaptation adds substantial improvement, and Laplacian personalization refines further.
 
-The main trade-off is runtime. ATLAS is slower in wall-clock time than standard FedAvg because clustering-aware coordination, split-state synchronization, and graph-based personalization add overhead. The systems claim is therefore not lower runtime, but a better operating point: higher task score, lower adapter communication, and stronger participation robustness at a measurable computational cost.
+The main trade-off is wall-clock runtime. Clustering coordination, split-state synchronization, and graph personalization add overhead versus standard FedAvg. ATLAS thus trades compute for a better operating point: higher accuracy, lower communication, and stronger robustness.
 
-The weak-device results are especially important for practical edge deployment. A heterogeneous FL method should not depend on excluding the least capable clients to remain competitive. In the reported federation, standard FedAvg repeatedly drops both weak devices, whereas ATLAS retains them while still improving the aggregate score. This pattern helps explain why the components work well together: clustering limits harmful cross-task mixing, heterogeneous LoRA ranks avoid uniform over-provisioning, split execution reduces client burden, and the Laplacian personalizes within the discovered task structure instead of smoothing across unrelated clients.
+Weak-device retention matters most for edge deployment. Standard FedAvg excludes low-resource clients to remain competitive, while ATLAS enables their participation through clustered collaboration, heterogeneous LoRA, split execution, and task-aware personalization.
 
 \subsection{Comparison to Prior Work}
 
-Table~\ref{tab:related_work_matrix} positions ATLAS against the most relevant prior systems. We deliberately keep this comparison qualitative because the completed experiments in this paper target a multi-task heterogeneous federation, whereas prior systems often emphasize only one axis such as graph regularization, heterogeneous PEFT, or split execution. A faithful quantitative head-to-head comparison would require reproducing those systems under the same federation and backbone settings.
+Table~\ref{tab:related_work_matrix} positions ATLAS against relevant systems. Prior work emphasizes single axes (graph regularization, heterogeneous PEFT, or split execution), while ATLAS jointly addresses task heterogeneity, device constraints, and communication in multi-task edge federations. Quantitative head-to-head comparison requires matched-federation reproduction.
 
-\begin{table}[t]
+\begin{table}[b]
 \centering
 \caption{Qualitative comparison with closely related FL/LLM systems.}
 \label{tab:related_work_matrix}
@@ -676,6 +680,8 @@ Fifth, while the JSON logs provide wall-clock runtime, the paper still does not 
 This paper presented ATLAS, a unified framework for federated adaptation of transformer-based LLMs over heterogeneous edge clients. ATLAS combines representation-based task discovery, budget-aware heterogeneous LoRA allocation, state-consistent split federated learning, and LoRA-only graph regularization within a single end-to-end pipeline. Across DistilBERT, GPT-2, and Qwen-2.5-0.5B, the framework consistently improves macro-average task score over standard FedAvg while reducing LoRA synchronization traffic and eliminating weak-device failures in the evaluated federation.
 
 The main conclusion is that statistical heterogeneity and systems heterogeneity should be handled jointly rather than as separate optimization problems. In ATLAS, task-aware clustering limits negative transfer, heterogeneous adapter allocation matches model capacity to device budgets, split execution improves feasibility for constrained clients, and graph-based personalization refines adaptation within task-consistent neighborhoods. The resulting gains are therefore not attributable to a single isolated mechanism, but to the interaction between these components.
+
+To facilitate reproducibility, we make the ATLAS framework publicly available as open-source software at \url{https://github.com/REPLACE-WITH-ATLAS-REPO}.
 
 At the same time, the current evidence has clear boundaries: the federation scale is moderate, the workloads are still narrow, the split-learning path introduces privacy exposure through exchanged activations, and the hyperparameter study is not yet exhaustive. The most important next step is not adding one more component, but stress-testing the existing design through larger federations, broader generative workloads, explicit sensitivity analyses over $\eta$, $\alpha$, and split-selection weights, and privacy-enhanced split protocols with measured privacy-utility trade-offs. If these follow-up studies confirm the present trends, ATLAS could serve as a useful reference architecture for practical on-device LLM adaptation in heterogeneous federated settings.
 

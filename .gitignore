@@ -1,11 +1,10 @@
-# Python
+# Python caches and build outputs
 __pycache__/
 *.py[cod]
 *$py.class
 *.so
 .Python
 build/
-develop-eggs/
 dist/
 downloads/
 eggs/
@@ -21,12 +20,12 @@ wheels/
 *.egg
 
 # Virtual environments
+.venv/
 venv/
 ENV/
 env/
-.venv
 
-# IDEs
+# Editors and OS files
 .vscode/
 .idea/
 *.swp
@@ -34,44 +33,47 @@ env/
 *~
 .DS_Store
 
-# Jupyter
+# Notebooks
 .ipynb_checkpoints/
-*.ipynb_checkpoints
+atlas_results_analysis.ipynb
 
-# Testing
+# Tests and coverage
 .pytest_cache/
 .coverage
+.coverage.*
 htmlcov/
 *.cover
-
-# History
+# Local history
 .history/
 
-# Datasets cache
-datasets/
+# Dataset and framework caches
 .cache/
+datasets/
 *.arrow
-*.pyc
 
-# Model checkpoints (too large)
+# Training artifacts
+checkpoints/
+logs/
+models/
+*.pkl
 *.pt
 *.pth
 *.bin
 *.ckpt
 
-# ATLAS run artifacts
-checkpoints/
-*.pkl
-
-# Experiment outputs (generated)
+# Generated experiment outputs
+results/*.json
+results/*.pdf
+results/*.tex
 results/statistical/
-results/atlas_integrated_*.json
 
-# Results (optional, comment out if you want to track results)
-# results/*.json
-# figures/*.png
-
+# Paper and private assets kept outside the public source tree
+*.pdf
+*.tex
+references.bib
+*.txt
+docs/SOLUTION_AND_REFERENCES.md
+docs/METHODOLOGY.md
 # Temporary files
 *.log
 *.tmp
-checkpoints/

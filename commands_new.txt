@@ -52,13 +52,3 @@ chmod +x ./gpu1_seed123.sh
 ./gpu2_seed456.sh Qwen/Qwen2.5-0.5B atlas ✔️
 ./gpu2_seed456.sh Qwen/Qwen2.5-0.5B standard_fl ✔️
 
-
-# SplitLoRA comparison (homo)
-python experiments/run_e2e_nlg.py --model gpt2 --clients 5 --rounds 15 --setting homo --ablation atlas ✔️
-python experiments/run_e2e_nlg.py --model gpt2 --clients 5 --rounds 15 --setting homo --ablation standard_fl ✔️
-python experiments/run_e2e_nlg.py --model gpt2 --clients 5 --rounds 15 --setting homo --ablation local_only✔️
-
-# HSplitLoRA comparison (hetero)
-python experiments/run_e2e_nlg.py --model gpt2 --clients 5 --rounds 15 --setting hetero --ablation atlas✔️
-python experiments/run_e2e_nlg.py --model gpt2 --clients 5 --rounds 15 --setting hetero --ablation standard_fl✔️
-python experiments/run_e2e_nlg.py --model gpt2 --clients 5 --rounds 15 --setting hetero --ablation local_only✔️

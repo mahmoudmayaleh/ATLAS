@@ -487,9 +487,6 @@ class ATLASIntegratedTrainer:
             'sst2': ('stanfordnlp/sst2', 'sentence', None, 2),
             'mrpc': ('nyu-mll/glue', 'sentence1', 'sentence2', 2),
             'qnli': ('nyu-mll/glue', 'question', 'sentence', 2),
-            # E2E NLG for SplitLoRA/HSplitLoRA comparison (classification proxy:
-            # binary sentiment derived from rating; for full NLG eval use run_e2e_nlg.py)
-            'e2e':  ('tuetschek/e2e_nlg', 'meaning_representation', None, 2),
         }
         
         # Setup clients and data
@@ -603,24 +600,6 @@ class ATLASIntegratedTrainer:
             if task_name == 'sst2':
                 dataset = load_dataset(dataset_name, split='train')
                 test_dataset = load_dataset(dataset_name, split='validation')
-            elif task_name == 'e2e':
-                # Both tuetschek/e2e_nlg and GEM/e2e_nlg have a legacy e2e_nlg.py
-                # dataset script that datasets >=2.20 refuses to run.  Load from
-                # the raw CSVs on GitHub instead (same data, no script involved).
-                # trainset/devset have lowercase 'mr'/'ref' columns; rename inline.
-                _base = "https://github.com/tuetschek/e2e-dataset/raw/master/"
-                def _load_e2e_csv(url, split_name):
-                    ds = load_dataset('csv', data_files={split_name: url}, split=split_name)
-                    col_map = {c.lower(): c for c in ds.column_names}
-                    orig_mr  = col_map.get('mr')
-                    orig_ref = col_map.get('ref')
-                    if orig_mr and orig_mr != 'meaning_representation':
-                        ds = ds.rename_column(orig_mr, 'meaning_representation')
-                    if orig_ref and orig_ref != 'human_reference':
-                        ds = ds.rename_column(orig_ref, 'human_reference')
-                    return ds
-                dataset      = _load_e2e_csv(_base + 'trainset.csv', 'train')
-                test_dataset = _load_e2e_csv(_base + 'devset.csv',   'validation')
             else:
                 dataset = load_dataset(dataset_name, task_name, split='train')
                 test_dataset = load_dataset(dataset_name, task_name, split='validation')
@@ -684,15 +663,6 @@ class ATLASIntegratedTrainer:
         # Tokenize
         # Task-specific max length (QNLI benefits from longer context)
         max_length = 256 if task_name == 'qnli' else 128
-
-        # E2E NLG: purely generative dataset — no label column.
-        # Add a dummy label (0) so the classification pipeline
-        # (DataLoader, loss, evaluation) can run without crashing.
-        # Real NLG evaluation (BLEU/NIST/METEOR/ROUGE-L) is handled
-        # separately by run_e2e_nlg.py; accuracy numbers here are not meaningful.
-        if task_name == 'e2e':
-            dataset     = dataset.map(lambda _: {'label': 0}, batched=False, load_from_cache_file=False)
-            test_dataset = test_dataset.map(lambda _: {'label': 0}, batched=False, load_from_cache_file=False)
 
         def tokenize_fn(examples):
             if text_col2:
@@ -2120,7 +2090,6 @@ class ATLASIntegratedTrainer:
                                 # Uniform fallback (round 1 or single-client cluster)
                                 return {cid: 1.0 / len(cids) for cid in cids}
                             total = sum(valid.values())
-                            # Clients with no score (e2e dummy) get uniform share
                             n_missing = len(cids) - len(valid)
                             fallback_w = (1.0 / len(cids)) if n_missing > 0 else 0.0
                             w = {}
@@ -2338,15 +2307,7 @@ class ATLASIntegratedTrainer:
                 round_test_losses[cid] = loss
                 # PPL = exp(loss) — works for classification (cross-entropy) and causal LM
                 round_ppl[cid] = float(np.exp(min(loss, 100.0)))
-
-                # E2E uses dummy label=0 → acc/f1/canonical are meaningless; only show loss/ppl
-                if client_data.task_name == 'e2e':
-                    round_accuracies[cid] = None
-                    round_f1s[cid]        = None
-                    round_canonical[cid]  = None
-                    print(f"  Client {cid} ({client_data.task_name}): loss={loss:.4f}, ppl={round_ppl[cid]:.2f}  [acc/f1 suppressed — dummy labels]", flush=True)
-                else:
-                    print(f"  Client {cid} ({client_data.task_name}): acc={acc:.4f}, f1={f1:.4f}, canonical={canonical:.4f}, loss={loss:.4f}, ppl={round_ppl[cid]:.2f}", flush=True)
+                print(f"  Client {cid} ({client_data.task_name}): acc={acc:.4f}, f1={f1:.4f}, canonical={canonical:.4f}, loss={loss:.4f}, ppl={round_ppl[cid]:.2f}", flush=True)
 
                 # Move model back to CPU after evaluation
                 try:
@@ -2402,7 +2363,7 @@ class ATLASIntegratedTrainer:
             task_canonical_round: Dict[str, List[float]] = {}
             for cd in self.clients_data:
                 v = round_canonical[cd.client_id]
-                if v is not None:   # skip e2e dummy-label clients
+                if v is not None:
                     task_canonical_round.setdefault(cd.task_name, []).append(v)
             task_summary = "  |  ".join(
                 f"{t}: {np.mean(v):.4f}" for t, v in sorted(task_canonical_round.items())
@@ -2410,9 +2371,9 @@ class ATLASIntegratedTrainer:
             _valid_acc = [v for v in round_accuracies.values() if v is not None]
             _valid_can = [v for v in round_canonical.values() if v is not None]
             print(f"\n[Round {round_idx+1}] SUMMARY", flush=True)
-            print(f"  Per-task canonical  : {task_summary}  [e2e excluded — dummy labels]", flush=True)
-            print(f"  Macro avg accuracy  : {np.mean(_valid_acc):.4f}  (real tasks only)", flush=True)
-            print(f"  Macro avg canonical : {np.mean(_valid_can):.4f}  (real tasks only)", flush=True)
+            print(f"  Per-task canonical  : {task_summary}", flush=True)
+            print(f"  Macro avg accuracy  : {np.mean(_valid_acc):.4f}", flush=True)
+            print(f"  Macro avg canonical : {np.mean(_valid_can):.4f}", flush=True)
             print(f"  Round time          : {round_time:.1f}s", flush=True)
             print(f"  Communication       : ↑{round_upload_total/1e6:.2f}MB ↓{round_download_total/1e6:.2f}MB", flush=True)
             
@@ -2473,7 +2434,7 @@ class ATLASIntegratedTrainer:
         for cd in self.clients_data:
             tname = cd.task_name
             v = round_canonical.get(cd.client_id)
-            if v is not None:   # skip e2e dummy-label clients
+            if v is not None:
                 final_task_canonical.setdefault(tname, []).append(v)
         results['final_task_scores'] = {
             tname: {
@@ -3257,7 +3218,6 @@ class ATLASIntegratedTrainer:
         'sst2': 'accuracy',
         'mrpc': 'f1',
         'qnli': 'accuracy',
-        'e2e':  'accuracy',
     }
 
     def _evaluate_client(
@@ -3464,7 +3424,7 @@ if __name__ == "__main__":
     parser.add_argument("--model", type=str, default="distilbert-base-uncased",
                        help="Model to use: distilbert, gpt2, gpt2-xl, qwen2.5")
     parser.add_argument("--tasks", type=str, nargs="+", default=['sst2', 'mrpc', 'qnli'],
-                       help="Tasks to use (space-separated): sst2 mrpc qnli e2e")
+                       help="Tasks to use (space-separated): sst2 mrpc qnli")
     parser.add_argument("--clients-per-task", type=int, default=3,
                        help="Number of clients per task")
     parser.add_argument("--samples", type=int, help="Override max_samples_per_client")

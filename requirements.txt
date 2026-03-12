@@ -24,14 +24,8 @@ pandas>=2.0.0  # Data manipulation for results
 # System metrics
 psutil>=5.9.0  # Memory and CPU monitoring
 
-# Optional: For future phases
 peft>=0.4.0  # Parameter-efficient fine-tuning (LoRA)
-# ray>=2.5.0  # For distributed simulation (Phase 3+)
 
-# NLG evaluation metrics (E2E NLG experiments for SplitLoRA/HSplitLoRA comparison)
-rouge-score>=0.1.2   # ROUGE-L
-sacrebleu>=2.3.0     # BLEU
-nltk>=3.8.0          # NIST, METEOR
 
 # Development tools
 pytest>=7.4.0
