@@ -2,12 +2,12 @@
 
 # ATLAS
 
-ATLAS is a research codebase for adaptive, task-aware federated fine-tuning of language models on heterogeneous clients. The maintained workflow centers on a single integrated experiment runner, reproducible seed-based launch scripts, and post-processing utilities for tables and figures.
+ATLAS is a framework for adaptive, task-aware federated fine-tuning of language models on heterogeneous clients. The maintained workflow centers on a single integrated experiment runner and reproducible seed-based launch scripts.
 
 ## Repository Scope
 
 - `src/` implements the clustering, configuration, split-learning, and Laplacian phases.
-- `experiments/atlas_integrated.py` is the primary entrypoint for classification experiments.
+- `experiments/atlas_integrated.py` is the primary entry point for classification experiments.
 - `tests/` contains the maintained unit test suite.
 - Generated artifacts such as logs, checkpoints, result JSON files, and paper assets are intentionally excluded from version control.
 
@@ -106,7 +106,7 @@ These are treated as build artifacts and are ignored by default.
 ## Documentation
 
 - `RUN_INSTRUCTIONS.md`: concise setup and execution guide
-- `experiments/EXPERIMENTS.md`: experiment entrypoints, ablations, and outputs
+- `experiments/EXPERIMENTS.md`: experiment entry points, ablations, and outputs
 
 ## Validation
 
